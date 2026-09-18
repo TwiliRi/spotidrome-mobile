@@ -66,8 +66,10 @@ class PlayerViewModel @Inject constructor(
                     fetchLyrics(it)
                     fetchArtistInfo(it)
                     updateLibraryInfo(it)
-                    val upcoming = playerManager.upcomingQueue.value
+                    // FIX: префетч только 3 следующих, а не всей очереди 20+ -> был шторм запросов
+                    val upcoming = playerManager.upcomingQueue.value.take(3)
                     if (upcoming.isNotEmpty()) {
+                        kotlinx.coroutines.delay(1000)
                         lyricsRepository.prefetchNextTracks(upcoming)
                     }
                 }
@@ -75,8 +77,10 @@ class PlayerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             playerManager.upcomingQueue.collect { upcoming ->
+                // FIX: debounce + только 3 трека, было на каждый чих очереди
+                kotlinx.coroutines.delay(2000)
                 if (upcoming.isNotEmpty() && playerManager.currentSongFlow.value != null) {
-                    lyricsRepository.prefetchNextTracks(upcoming)
+                    lyricsRepository.prefetchNextTracks(upcoming.take(3))
                 }
             }
         }
@@ -229,6 +233,8 @@ class PlayerViewModel @Inject constructor(
     fun fetchArtistInfo(song: Song) {
         artistJob?.cancel()
         artistJob = viewModelScope.launch {
+            // FIX: debounce 800ms чтобы при быстром скипе треков не спамить getTopSongs/getArtist
+            kotlinx.coroutines.delay(800)
             val artistName = song.artist ?: return@launch
             val artistId = song.artistId
             _artistInfo.value = ArtistInfoState(isLoading = true)

@@ -49,7 +49,8 @@ class SonicSpotApp : Application(), ImageLoaderFactory {
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("coil"))
-                    .maxSizePercent(0.05) // 5% storage ~50MB, avoid huge cache causing DiskLruCache contention 233ms
+                    .maxSizePercent(0.10) // FIX: Tempus cover cache 500MB, было 5% ~50MB -> часто evict и перекачка -> фризы
+                    // Стало 10% ~100MB, баланс между местом и скоростью, LRU как в Tempus
                     .build()
             }
             .respectCacheHeaders(false)

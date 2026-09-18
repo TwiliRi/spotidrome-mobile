@@ -495,14 +495,12 @@ private fun SyncedLyricsPreview(
             itemsIndexed(lines, key = { idx, line -> "${line.timestampMs}-${idx}" }) { idx, line ->
                 val isCurrent = idx == currentIndex
                 val isPast = idx < currentIndex
-                val textColor by animateColorAsState(
-                    targetValue = when {
-                        isCurrent -> SpotifyColors.White
-                        isPast -> SpotifyColors.LightGray.copy(alpha = 0.6f)
-                        else -> SpotifyColors.MediumGray
-                    },
-                    animationSpec = tween(200), label = "color"
-                )
+                // FIX: убраны animateColorAsState -> было 100 анимаций одновременно при каждой смене строки -> фриз
+                val textColor = when {
+                    isCurrent -> SpotifyColors.White
+                    isPast -> SpotifyColors.LightGray.copy(alpha = 0.6f)
+                    else -> SpotifyColors.MediumGray
+                }
                 val fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                 val fontSize = if (isCurrent) 15.sp else 13.sp
                 Text(
@@ -515,8 +513,10 @@ private fun SyncedLyricsPreview(
                 )
             }
         }
-        Box(modifier = Modifier.fillMaxWidth().height(24.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(SpotifyColors.Gray.copy(alpha = 0.8f), Color.Transparent))))
-        Box(modifier = Modifier.fillMaxWidth().height(24.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, SpotifyColors.Gray.copy(alpha = 0.8f)))))
+        val topFade = remember { Brush.verticalGradient(listOf(SpotifyColors.Gray.copy(alpha = 0.8f), Color.Transparent)) }
+        val bottomFade = remember { Brush.verticalGradient(listOf(Color.Transparent, SpotifyColors.Gray.copy(alpha = 0.8f))) }
+        Box(modifier = Modifier.fillMaxWidth().height(24.dp).align(Alignment.TopCenter).background(topFade))
+        Box(modifier = Modifier.fillMaxWidth().height(24.dp).align(Alignment.BottomCenter).background(bottomFade))
         Box(modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp).clip(RoundedCornerShape(16.dp)).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 10.dp, vertical = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Fullscreen, null, tint = SpotifyColors.White, modifier = Modifier.size(14.dp))
@@ -553,15 +553,18 @@ private fun FullscreenLyricsScreen(
             .build()
     }
 
+    // FIX: blur 20.dp -> 12.dp + no recomposition, было тяжелый saveLayer на каждый кадр
+    val blurModifier = remember { Modifier.fillMaxSize().blur(12.dp) }
     Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
         AsyncImage(
             model = coverRequestSmall,
             contentDescription = null,
-            modifier = Modifier.fillMaxSize().blur(20.dp),
+            modifier = blurModifier,
             contentScale = ContentScale.Crop,
-            alpha = 0.3f
+            alpha = 0.25f
         )
-        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.8f), SpotifyColors.Black))))
+        val bgGradient = remember { Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.8f), SpotifyColors.Black)) }
+        Box(modifier = Modifier.fillMaxSize().background(bgGradient))
 
         Column(modifier = Modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -710,24 +713,14 @@ private fun FullscreenSyncedLyrics(
         itemsIndexed(lines, key = { idx, l -> "${l.timestampMs}-${idx}" }) { idx, line ->
             val isCurrent = idx == currentIndex
             val isPast = idx < currentIndex
-
-            val color by animateColorAsState(
-                targetValue = when {
-                    isCurrent -> Color.White
-                    isPast -> Color.White.copy(alpha = 0.6f)
-                    else -> Color.White.copy(alpha = 0.35f)
-                },
-                animationSpec = tween(250), label = "color"
-            )
-            val fontSize by animateFloatAsState(
-                targetValue = if (isCurrent) 26f else 20f,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                label = "fontSize"
-            )
-            val alpha by animateFloatAsState(
-                targetValue = if (isCurrent) 1f else if (isPast) 0.6f else 0.4f,
-                animationSpec = tween(250), label = "alpha"
-            )
+            // FIX: убраны 3 анимации на каждую строку (100 строк * 3 = 300 анимаций) -> фриз при скролле текста
+            val color = when {
+                isCurrent -> Color.White
+                isPast -> Color.White.copy(alpha = 0.6f)
+                else -> Color.White.copy(alpha = 0.35f)
+            }
+            val fontSize = if (isCurrent) 26f else 20f
+            val alpha = if (isCurrent) 1f else if (isPast) 0.6f else 0.4f
 
             Box(
                 modifier = Modifier.fillMaxWidth()
@@ -782,7 +775,8 @@ private fun ArtistInfoSection(
         Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SpotifyColors.Gray).padding(16.dp)) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF450AF5), Color(0xFF8E8EE5)))), contentAlignment = Alignment.Center) {
+                    val noLyricsGradient = remember { Brush.linearGradient(listOf(Color(0xFF450AF5), Color(0xFF8E8EE5))) }
+                    Box(modifier = Modifier.size(64.dp).clip(CircleShape).background(noLyricsGradient), contentAlignment = Alignment.Center) {
                         val cover = artistInfo.artistDetail?.coverArt?.let { coverUrlProvider(it) }
                         if (cover != null) com.sonicspot.player.ui.components.CoverArtImage(url = cover, modifier = Modifier.fillMaxSize(), cornerRadius = 32.dp, sizePx = 128)
                         else Text(artistName.take(1).uppercase(), color = SpotifyColors.White, style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold))

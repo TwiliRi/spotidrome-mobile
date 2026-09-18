@@ -72,8 +72,9 @@ class MusicService : MediaSessionService() {
                     try {
                         val request = ImageRequest.Builder(this@MusicService)
                             .data(uri)
-                            .size(512)
+                            .size(200)
                             .allowHardware(false)
+                            .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
                             .build()
                         val result = coilImageLoader?.execute(request)?.drawable
                         val bitmap = (result as? BitmapDrawable)?.bitmap ?: result?.toBitmap()
@@ -90,13 +91,18 @@ class MusicService : MediaSessionService() {
             }
 
             override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> {
-                return try {
-                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.size)
-                    if (bitmap != null) Futures.immediateFuture(bitmap)
-                    else Futures.immediateFailedFuture(Exception("decode failed"))
-                } catch (e: Exception) {
-                    Futures.immediateFailedFuture(e)
+                // FIX: decode на IO, а не на Main -> был фриз нотификации
+                val future = com.google.common.util.concurrent.SettableFuture.create<Bitmap>()
+                serviceScope.launch(Dispatchers.IO) {
+                    try {
+                        val bitmap = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.size)
+                        if (bitmap != null) future.set(bitmap)
+                        else future.setException(Exception("decode failed"))
+                    } catch (e: Exception) {
+                        future.setException(e)
+                    }
                 }
+                return future
             }
 
             override fun supportsMimeType(mimeType: String): Boolean {
@@ -180,12 +186,14 @@ class MusicService : MediaSessionService() {
             }
         }
         serviceScope.launch {
-            prefs.dislikedIdsFlow.collect {
+            prefs.dislikedIdsFlow.collect { ids ->
+                cachedDislikedIds = ids
                 updateCustomLayout()
             }
         }
         serviceScope.launch {
-            prefs.likedIdsFlow.collect {
+            prefs.likedIdsFlow.collect { ids ->
+                cachedLikedIds = ids
                 updateCustomLayout()
             }
         }
@@ -193,8 +201,18 @@ class MusicService : MediaSessionService() {
         updateCustomLayout()
     }
 
+    // FIX: кешируем liked/disliked чтобы не делать DataStore first() на каждый чих
+    private var cachedLikedIds: Set<String> = emptySet()
+    private var cachedDislikedIds: Set<String> = emptySet()
+    private var customLayoutJob: kotlinx.coroutines.Job? = null
+
     private fun updateCustomLayout() {
-        serviceScope.launch {
+        // FIX: debounce + cancel previous чтобы не спамить MediaSession.setCustomLayout
+        // Было: каждый collect вызывал launch без отмены -> много параллельных first() + setCustomLayout -> фриз
+        // Стало: debounce 200ms + отмена предыдущего
+        customLayoutJob?.cancel()
+        customLayoutJob = serviceScope.launch {
+            kotlinx.coroutines.delay(200)
             updateCustomLayoutInternal()
         }
     }
@@ -206,15 +224,8 @@ class MusicService : MediaSessionService() {
         val isShuffle = state.shuffleEnabled
         val currentSongId = state.currentSong?.id
 
-        val isFavorite = try {
-            val ids = prefs.likedIdsFlow.first()
-            ids.contains(currentSongId)
-        } catch (_: Exception) { false }
-
-        val isDisliked = try {
-            val ids = prefs.dislikedIdsFlow.first()
-            ids.contains(currentSongId)
-        } catch (_: Exception) { false }
+        val isFavorite = cachedLikedIds.contains(currentSongId)
+        val isDisliked = cachedDislikedIds.contains(currentSongId)
 
         val dislikeButton = CommandButton.Builder()
             .setDisplayName(if (isDisliked) "Убрать из исключенных" else "Исключить")

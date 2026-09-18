@@ -1077,10 +1077,12 @@ fun SleepTimerButton(
         formatSleepRemaining(sleepState.remainingMillis)
     } else null
 
-    val backgroundBrush = if (isActive) {
-        Brush.linearGradient(colors = listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
-    } else {
-        Brush.linearGradient(colors = listOf(SpotifyColors.Gray, SpotifyColors.GrayLighter.copy(alpha = 0.6f)))
+    val backgroundBrush = remember(isActive) {
+        if (isActive) {
+            Brush.linearGradient(colors = listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
+        } else {
+            Brush.linearGradient(colors = listOf(SpotifyColors.Gray, SpotifyColors.GrayLighter.copy(alpha = 0.6f)))
+        }
     }
 
     Box(
@@ -1148,12 +1150,13 @@ fun SleepTimerCompactIconButton(
     modifier: Modifier = Modifier
 ) {
     val isActive = sleepState is com.sonicspot.player.player.SleepTimerState.Active
+    val bgBrush = remember(isActive) {
+        if (isActive) Brush.linearGradient(listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
+        else Brush.linearGradient(listOf(SpotifyColors.Gray, SpotifyColors.Gray))
+    }
     Box(
         modifier = modifier.size(40.dp).clip(CircleShape)
-            .background(
-                if (isActive) Brush.linearGradient(listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
-                else Brush.linearGradient(listOf(SpotifyColors.Gray, SpotifyColors.Gray))
-            )
+            .background(bgBrush)
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
