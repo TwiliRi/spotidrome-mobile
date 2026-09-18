@@ -1,0 +1,154 @@
+# ==================== Spotidrom / SonicSpot - .gitignore ====================
+# Секреты подписи - НИКОГДА не коммитить!
+*.jks
+*.keystore
+keystore.properties
+release.keystore
+debug.keystore
+app/release.keystore
+*.p12
+*.key
+
+# Разрешаем пример - его НУЖНО коммитить
+!keystore.properties.example
+
+# ==================== Android ====================
+# Local config - пути SDK у каждого свои
+local.properties
+
+# Gradle cache и wrapper jar
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+!gradle/wrapper/gradle-wrapper.jar
+.gradle
+
+# Build outputs
+build/
+app/build/
+*/build/
+out/
+release/
+app/release/
+app/debug/
+captures/
+.externalNativeBuild/
+.cxx/
+obj/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+
+# NDK
+*.so
+
+# Proguard mapping - содержит пути, но иногда полезно коммитить для дебага
+# Раскомментируй если НЕ хочешь коммитить маппинг:
+# app/build/outputs/mapping/
+
+# ==================== Kotlin / KSP ====================
+.kotlin/
+ksp/
+*.kotlin_module
+
+# ==================== IDE ====================
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+*.idea/
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/dictionaries/
+.idea/shelf/
+.idea/compiler.xml
+.idea/jarRepositories.xml
+.idea/misc.xml
+.idea/vcs.xml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# ==================== OS ====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*~
+.directory
+
+# ==================== Logs ====================
+*.log
+*.hprof
+*.stacktrace
+gradle.log
+idea.log
+
+# ==================== Temp / Cache ====================
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+.cache/
+tmp/
+temp/
+
+# ==================== Testing ====================
+.test/
+test-results/
+jacoco/
+coverage/
+*.exec
+*.ec
+
+# ==================== Other ====================
+# Env файлы если появятся
+.env
+.env.local
+.env.*.local
+
+# Google Services - содержит ключи, не коммитить если приватный проект
+# google-services.json
+# GoogleService-Info.plist
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Local keystore props backup
+*.keystore.bak
+keystore.properties.bak
+keystore.properties.local
+
+# Bundletool
+bundle.aab
+*.aab
+
+# Lint
+lint-results*.xml
+lint-results*.html
+
+# Navigation editor
+.navigation/
+
+# ==================== Spotidrom specific ====================
+# Не коммитить кэш обложек если вдруг появится локально
+artwork-cache/
+coil-cache/
