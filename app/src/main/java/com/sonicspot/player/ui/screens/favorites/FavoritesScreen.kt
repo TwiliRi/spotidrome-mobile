@@ -23,9 +23,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Song
+import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.SongRowModern
 import com.sonicspot.player.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,11 +46,15 @@ fun FavoritesScreen(
     val gradient = remember { Brush.verticalGradient(colors = listOf(Color(0xFF450AF5), Color(0xFF2A2A2A), SpotifyColors.Black), startY = 0f, endY = 600f) }
     var songToRemove by remember { mutableStateOf<Song?>(null) }
 
+    // Правильная пагинация: только когда доскроллили, distinctUntilChanged
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+            .filter { it != null }
+            .map { it!! }
+            .distinctUntilChanged()
             .collect { lastVisible ->
                 val total = listState.layoutInfo.totalItemsCount
-                if (lastVisible != null && lastVisible >= total - 5 && state.hasMore) {
+                if (lastVisible >= total - 5 && state.hasMore) {
                     viewModel.loadMore()
                 }
             }
@@ -58,7 +66,12 @@ fun FavoritesScreen(
             return
         }
 
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+        ProvidePauseImageLoadsDuringScroll(listState) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
             item {
                 Box(modifier = Modifier.fillMaxWidth().background(gradient)) {
                     Column {
@@ -141,9 +154,10 @@ fun FavoritesScreen(
                 val isPlaying = currentSongId?.id == song.id
                 val isLiked = likedIds.contains(song.id) || song.isStarred
                 val isDisliked = dislikedIds.contains(song.id)
+                val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                 SongRowModern(
                     song = song,
-                    coverUrl = viewModel.getCoverUrl(song.coverArt, 88),
+                    coverUrl = coverUrl,
                     isPlaying = isPlaying,
                     isLiked = isLiked,
                     isDisliked = isDisliked,
@@ -182,6 +196,7 @@ fun FavoritesScreen(
                 }
             }
         }
+        } // ProvidePauseImageLoadsDuringScroll
 
         if (songToRemove != null) {
             RemoveLikeBottomSheet(

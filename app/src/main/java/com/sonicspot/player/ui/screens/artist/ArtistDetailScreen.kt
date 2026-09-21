@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,18 +26,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.AlbumCardModern
+import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.SectionHeaderModern
 import com.sonicspot.player.ui.components.SongRowModern
 import com.sonicspot.player.ui.theme.*
@@ -51,11 +51,13 @@ fun ArtistDetailScreen(
     viewModel: ArtistDetailViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val currentSongId by viewModel.playerManager.currentSongFlow.collectAsState()
     val likedIds by viewModel.likedIds.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
 
     var showAllTracks by remember { mutableStateOf(false) }
     var showArtistOptions by remember { mutableStateOf(false) }
@@ -120,31 +122,22 @@ fun ArtistDetailScreen(
             return
         }
 
+        // Пауза загрузки обложек во время флинга = плавный скролл 60fps.
+        ProvidePauseImageLoadsDuringScroll(listState) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
-            // HEADER - 440dp Spotify style
-            // FIX: Было 800px full res + allowHardware true -> лаг + Image decoding dropped
-            // Стало: 400px (достаточно для 440dp header, 2x меньше трафика) + RGB_565 + no hardware
+            // HEADER - 440dp в стиле Spotify. Используем CoverArtImage с HARDWARE-битмапом.
             item {
                 Box(modifier = Modifier.fillMaxWidth().height(440.dp)) {
-                    val req = remember(artist.coverArt) {
-                        ImageRequest.Builder(context)
-                            .data(viewModel.getCoverUrl(artist.coverArt, 400))
-                            .size(400)
-                            .crossfade(false)
-                            .allowHardware(false)
-                            .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
-                            .memoryCacheKey("${artist.coverArt}-400")
-                            .diskCacheKey("${artist.coverArt}-400")
-                            .build()
-                    }
-                    AsyncImage(
-                        model = req,
-                        contentDescription = null,
+                    val headerCoverUrl = remember(artist.coverArt) { viewModel.getCoverUrl(artist.coverArt, 600) }
+                    CoverArtImage(
+                        url = headerCoverUrl,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        cornerRadius = 0.dp,
+                        sizePx = 600
                     )
                     Box(
                         modifier = Modifier.fillMaxWidth().height(120.dp).background(
@@ -268,12 +261,14 @@ fun ArtistDetailScreen(
                     Spacer(Modifier.height(4.dp))
                 }
                 val tracksToShow = if (showAllTracks) state.topSongs else state.topSongs.take(5)
-                itemsIndexed(tracksToShow, key = { _, s -> s.id }) { index, song ->
+                itemsIndexed(tracksToShow, key = { _, s -> s.id }, contentType = { _, _ -> "song" }) { index, song ->
+                    val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
+                    val isPlaying = currentSongId?.id == song.id
                     SongRowModern(
                         song = song,
-                        coverUrl = viewModel.getCoverUrl(song.coverArt, 88),
-                        isPlaying = false,
-                        isLiked = likedIds.contains(song.id),
+                        coverUrl = coverUrl,
+                        isPlaying = isPlaying,
+                        isLiked = likedIds.contains(song.id) || song.isStarred,
                         isDisliked = dislikedIds.contains(song.id),
                         trackNumber = index + 1,
                         showCover = true,
@@ -331,9 +326,10 @@ fun ArtistDetailScreen(
                     pageSize = 4,
                     key = { it.id },
                     itemContent = { album ->
+                        val albumCoverUrl = remember(album.coverArt) { viewModel.getCoverUrl(album.coverArt, 304) }
                         AlbumCardModern(
                             album = album,
-                            coverUrl = viewModel.getCoverUrl(album.coverArt, 304),
+                            coverUrl = albumCoverUrl,
                             onClick = { onAlbumClick(album.id) },
                             onLongClick = {
                                 selectedAlbumForOptions = album
@@ -355,10 +351,10 @@ fun ArtistDetailScreen(
                     ) {
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                val aboutCoverUrl = remember(artist.coverArt) { viewModel.getCoverUrl(artist.coverArt, 128) }
                                 Box(modifier = Modifier.size(64.dp).clip(CircleShape).background(SpotifyColors.GrayLighter)) {
-                                    // FIX: 64dp -> 128px, было 200px + raw AsyncImage
-                                    com.sonicspot.player.ui.components.CoverArtImage(
-                                        url = viewModel.getCoverUrl(artist.coverArt, 128),
+                                    CoverArtImage(
+                                        url = aboutCoverUrl,
                                         modifier = Modifier.fillMaxSize(),
                                         cornerRadius = 32.dp,
                                         sizePx = 128
@@ -403,6 +399,7 @@ fun ArtistDetailScreen(
                 }
             }
         }
+        } // ProvidePauseImageLoadsDuringScroll
 
         // Snackbar для копирования ссылки
         SnackbarHost(

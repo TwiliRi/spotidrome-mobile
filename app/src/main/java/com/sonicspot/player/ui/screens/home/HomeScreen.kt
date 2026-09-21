@@ -13,8 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +30,7 @@ import com.sonicspot.player.data.model.Playlist
 import com.sonicspot.player.ui.components.*
 import com.sonicspot.player.ui.theme.*
 import java.util.Calendar
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -99,14 +98,7 @@ fun HomeScreen(
         Brush.verticalGradient(colors = listOf(Color(0xFF2A2A2A), SpotifyColors.Black), startY = 0f, endY = 600f)
     }
 
-    // FIX: rememberLazyListState для детекта быстрого скролла - Spotify ставит на паузу загрузку картинок при быстром скролле
-    // Логи показали Image decoding logging dropped x15 из-за 64 картинок одновременно
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    // Правильный детект быстрого скролла: если скролл в процессе, считаем что быстрый
-    // Можно улучшить проверкой velocity, но isScrollInProgress уже достаточно чтобы снизить нагрузку
-    val isScrolling by remember {
-        derivedStateOf { listState.isScrollInProgress }
-    }
 
     Box(
         modifier = Modifier.fillMaxSize().background(backgroundBrush)
@@ -115,13 +107,12 @@ fun HomeScreen(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() }
         ) {
+            // Пауза загрузки обложек во время флинга = 60 fps на скролле.
+            ProvidePauseImageLoadsDuringScroll(listState) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 100.dp),
-                // FIX: Уменьшаем prefetch чтобы не грузить 47 картинок одновременно
-                // Spotify грузит только видимые + 1-2 за пределами экрана
-                flingBehavior = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
             ) {
                 item(key = "header", contentType = "header") {
                     Row(
@@ -449,6 +440,7 @@ fun HomeScreen(
                     }
                 }
             }
+            } // ProvidePauseImageLoadsDuringScroll
         }
 
         if (showAlbumSheet) {

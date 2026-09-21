@@ -16,18 +16,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.SongRowModern
 import com.sonicspot.player.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 
 @Composable
 fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetailViewModel = hiltViewModel()) {
@@ -41,11 +42,17 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
 
     LaunchedEffect(albumId) { viewModel.loadAlbum(albumId) }
 
+    // Пагнация с правильными ключами: не перезапускается при каждом изменении state,
+    // срабатывает только когда lastVisible реально изменился и дошли до предпоследних
+    // элементов. distinctUntilChanged убирает дубли вызовов.
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+            .filter { it != null }
+            .map { it!! }
+            .distinctUntilChanged()
             .collect { lastVisible ->
                 val total = listState.layoutInfo.totalItemsCount
-                if (lastVisible != null && lastVisible >= total - 5 && state.hasMore) {
+                if (lastVisible >= total - 5 && state.hasMore) {
                     viewModel.loadMore()
                 }
             }
@@ -62,7 +69,14 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
             return
         }
 
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+        // Оборачиваем список в провайдер, который на время флинга ставит загрузку
+        // обложек на паузу: декоды не сжирают ядра, скролл ровный 60fps.
+        ProvidePauseImageLoadsDuringScroll(listState) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
             item {
                 Box(modifier = Modifier.fillMaxWidth().background(gradient)) {
                     Column {
@@ -80,7 +94,8 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
                             Text(text = album.name, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.ExtraBold, fontSize = 22.sp), color = SpotifyColors.White)
                             Spacer(Modifier.height(6.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                CoverArtImage(url = viewModel.getCoverUrl(album.artistId ?: "", 40), modifier = Modifier.size(20.dp).clip(CircleShape), cornerRadius = 10.dp, sizePx = 40)
+                                val artistCover = remember(album.artistId) { viewModel.getCoverUrl(album.artistId ?: "", 40) }
+                                CoverArtImage(url = artistCover, modifier = Modifier.size(20.dp).clip(CircleShape), cornerRadius = 10.dp, sizePx = 40)
                                 Spacer(Modifier.width(6.dp))
                                 Text(text = album.artist ?: "Unknown", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp), color = SpotifyColors.White)
                             }
@@ -158,6 +173,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
                 }
             }
         }
+        } // ProvidePauseImageLoadsDuringScroll
 
         // Spotify style bottom sheet для удаления лайка - FIX: 88dp = 176px, было 200
         if (songToRemove != null) {

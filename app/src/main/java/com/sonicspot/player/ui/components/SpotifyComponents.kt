@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,20 +30,76 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.sonicspot.player.util.CoverArt
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.sonicspot.player.util.CoverArt
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Artist
 import com.sonicspot.player.data.model.Playlist
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
 
-// ==================== COVER ART - ОПТИМИЗИРОВАН ПОД 60FPS ====================
-// Фикс лагов из логов:
-// - cache_read 735ms на MAIN + Skipped 40 frames
-// - DiskLruCache contention 233ms + 195ms при 47 картинках одновременно
-// - Image decoding logging dropped - слишком много декодирования за кадр
-// - GC freed 10MB - много аллокаций
+// ==================== Глобальный флаг "приостанови загрузку обложек" ====================
+//
+// Проблема: во время быстрого флинга LazyColumn/LazyRow в зоне видимости на мгновение
+// появляются десятки ячеек. Coil немедленно начинает для всех фетч + декод, забивает
+// все ядра декодами и роняет fps. Spotify/Instagram/Google Photos на флинге просто
+// приостанавливают новые загрузки и показывают плейсхолдер; как только скролл
+// останавливается — начинают подгружать видимые. Это даёт 60fps на флинге.
+//
+// Использование: оборачиваем список в ProvidePauseImageLoadsDuringScroll(listState) { ... }
+// и флаг сам становится true во время скролла.
+val LocalPauseImageLoads = compositionLocalOf { false }
+
+/**
+ * Ставит LocalPauseImageLoads в true, пока список находится в движении (флинг или скролл).
+ * Когда скролл заканчивается — становится false, и Coil начинает грузить то что видно.
+ */
+@Composable
+fun ProvidePauseImageLoadsDuringScroll(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    content: @Composable () -> Unit
+) {
+    val isScrolling by remember {
+        snapshotFlow { listState.isScrollInProgress }
+            .distinctUntilChanged()
+    }.collectAsState(initial = listState.isScrollInProgress)
+
+    CompositionLocalProvider(LocalPauseImageLoads provides isScrolling) {
+        content()
+    }
+}
+
+@Composable
+fun ProvidePauseImageLoadsDuringScroll(
+    listState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    content: @Composable () -> Unit
+) {
+    val isScrolling by remember {
+        snapshotFlow { listState.isScrollInProgress }
+            .distinctUntilChanged()
+    }.collectAsState(initial = listState.isScrollInProgress)
+
+    CompositionLocalProvider(LocalPauseImageLoads provides isScrolling) {
+        content()
+    }
+}
+
+// ==================== COVER ART - 60 FPS, HARDWARE БИТМАПЫ, НЕТ ПЕРЕЗАГРУЗКИ ====================
+//
+// Что было не так в прошлой версии:
+//   1) RGB_565 + глобальный allowHardware(false) → software-битмапы в куче, вытесняются,
+//      аплоад на GPU каждый кадр, фреймдроп при скролле и "перезагрузка обложек".
+//   2) filterQuality=Low — мылит картинки на всех современных устройствах.
+//   3) Нет паузы загрузок на флинге — 47 обложек одновременно декодятся.
+//   4) На каждый рекомпоз строились новые объекты (key parsing) хоть и в remember.
+//
+// Что теперь:
+//   • HARDWARE битмапы (ARGB_8888) — в графической памяти, не GC, не аплоад.
+//   • Ключи диска/памяти построены один раз через remember(url, sizePx).
+//   • При флинге новые загрузки ставятся на паузу (пока только видимые после остановки).
+//   • Плейсхолдер серый всегда есть → нет скачка лейаута.
 @Composable
 fun CoverArtImage(
     url: String?,
@@ -51,44 +109,48 @@ fun CoverArtImage(
     sizePx: Int = 300
 ) {
     val context = LocalContext.current
-    // Ключ ДИСКА — по корзине размера (CoverArt.LIST / LARGE), без sizePx. Раньше в ключ входил
-    // sizePx, а в UI их восемь, — и одна обложка скачивалась и хранилась до восьми раз. Сейчас
-    // с сервера приходит один из двух размеров, а на диск обложка ложится один раз на корзину.
-    val diskKey = remember(url) {
-        if (url == null) null else {
-            try {
-                val idParam = url.substringAfter("id=").substringBefore("&").ifEmpty { url.hashCode().toString() }
-                // Размер берём из самого URL, где он уже квантован в MusicRepository, а не из
-                // sizePx: ключ обязан в точности соответствовать тому, что реально лежит на
-                // диске. Иначе корзина, посчитанная по sizePx, могла бы не совпасть с размером
-                // пришедшей картинки, и крупная обложка оказалась бы записана под чужим ключом.
-                val sizeParam = url.substringAfter("size=", "").substringBefore("&")
-                    .ifEmpty { CoverArt.LIST.toString() }
-                "$idParam-$sizeParam"
-            } catch (_: Exception) {
-                "${url}-${CoverArt.LIST}"
-            }
+    val pauseLoads = LocalPauseImageLoads.current
+
+    // Ключ диска — по ID обложки + квантованному размеру (LIST/LARGE), а не по всему URL
+    // с солью (и тогда одна и та же обложка, скачанная до и после перелогина, лежит в
+    // одном файле на диске). Память — с учётом отображаемого sizePx, но HARDWARE
+    // битмапы разделимы по размеру только на уровне декодера, так что memory-key
+    // всё ещё должен учитывать sizePx.
+    val cacheKeys = remember(url, sizePx) {
+        if (url == null) null
+        else try {
+            val id = url.substringAfter("id=").substringBefore("&").ifEmpty { url.hashCode().toString() }
+            val bucket = url.substringAfter("size=", "").substringBefore("&")
+                .ifEmpty { CoverArt.LIST.toString() }
+            val diskKey = "$id-$bucket"
+            val memoryKey = "$diskKey@$sizePx"
+            diskKey to memoryKey
+        } catch (_: Exception) {
+            val key = "${url}-${CoverArt.LIST}"
+            key to "$key@$sizePx"
         }
     }
-    // Ключ ПАМЯТИ — с учётом sizePx: Coil декодирует картинку под конкретный отображаемый
-    // размер, и 56dp-превью не должно вытеснять из памяти 152dp-карточку альбома.
-    val memoryKey = remember(diskKey, sizePx) { diskKey?.let { "$it@$sizePx" } }
-    val imageRequest = remember(url, sizePx, diskKey, memoryKey) {
-        if (url == null) null else {
-            ImageRequest.Builder(context)
-                .data(url)
-                // Декодировать под отображаемый размер: 300px из сети не должны ложиться
-                // в память как 300px там, где видно только 56dp.
-                .size(sizePx)
-                .crossfade(false)
-                .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
-                // allowHardware здесь не задаём: при заданном bitmapConfig Coil всё равно
-                // отключает аппаратные битмапы, так что прежний явный запрет был ни на что
-                // не влияющим шумом, вводящим в заблуждение.
-                .memoryCacheKey(memoryKey)
-                .diskCacheKey(diskKey)
-                .build()
-        }
+
+    val imageRequest = remember(url, sizePx, cacheKeys, pauseLoads) {
+        val (diskKey, memoryKey) = cacheKeys ?: return@remember null
+        ImageRequest.Builder(context)
+            .data(url)
+            .size(sizePx)
+            .crossfade(false)
+            // ========== ГЛАВНЫЙ ФИКС: HARDWARE битмапы ==========
+            // Не ставим .bitmapConfig и не запрещаем hardware — Coil сам выбирает
+            // оптимальный HARDWARE/ARGB_8888. Это убирает аплоад на GPU каждый кадр
+            // и снимает давление с Java heap — основная причина и лагов, и
+            // "перезагрузки обложек" при скролле.
+            .memoryCacheKey(memoryKey)
+            .diskCacheKey(diskKey)
+            // Во время флинга — только кэш (память + диск), не ходить в сеть и
+            // не декодить не закэшированное. Как только скролл останавливается,
+            // флаг снимается, и новые видимые картинки догружаются в спокойном
+            // режиме. При этом попадания в кэш работают мгновенно, так что уже
+            // загруженные обложки не исчезают и не перезагружаются.
+            .networkCachePolicy(if (pauseLoads) CachePolicy.DISABLED else CachePolicy.ENABLED)
+            .build()
     }
 
     Box(
@@ -102,7 +164,11 @@ fun CoverArtImage(
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
+                // FilterQuality.None на HARDWARE битмапах даёт самое быстрое
+                // масштабирование (nearest-neighbor). При HARDWARE пиксели не
+                // читаются, так что bilinear всё равно бы упал в программную
+                // перерисовку.
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.None
             )
         }
     }

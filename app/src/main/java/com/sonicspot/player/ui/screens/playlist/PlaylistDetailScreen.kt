@@ -18,17 +18,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.sonicspot.player.data.model.Song
+import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.SongRowModern
 import com.sonicspot.player.ui.theme.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 
 @Composable
 fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: PlaylistDetailViewModel = hiltViewModel()) {
@@ -43,11 +45,16 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
 
     LaunchedEffect(playlistId) { viewModel.loadPlaylist(playlistId) }
 
+    // Пагинация: distinctUntilChanged + фильтр нулов — не дублирует loadMore на
+    // каждое движение скролла, только когда реально дошли до конца.
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+            .filter { it != null }
+            .map { it!! }
+            .distinctUntilChanged()
             .collect { lastVisible ->
                 val total = listState.layoutInfo.totalItemsCount
-                if (lastVisible != null && lastVisible >= total - 5 && state.hasMore) {
+                if (lastVisible >= total - 5 && state.hasMore) {
                     viewModel.loadMore()
                 }
             }
@@ -70,7 +77,13 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
 
         val isExcludedPlaylist = playlist.name == "Исключённые треки"
 
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+        // При флинге приостанавливаем загрузку обложек — 60 fps.
+        ProvidePauseImageLoadsDuringScroll(listState) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 100.dp)
+        ) {
             item(key = "header", contentType = "header") {
                 Box(modifier = Modifier.fillMaxWidth().background(gradient)) {
                     Column {
@@ -109,11 +122,10 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                                 )
                             ) {
                                 val firstCover = playlist.entry.firstOrNull()?.coverArt
-                                if (firstCover != null && !isExcludedPlaylist) {
-                                    // FIX: Было 300px + allowHardware true -> full res для 0.7f ширины (~250dp) нужно 500px, но не 300 с hardware
-                                    // Стало: 500px для большого хедера + RGB_565 + no hardware
-                                    com.sonicspot.player.ui.components.CoverArtImage(
-                                        url = viewModel.getCoverUrl(firstCover, 500),
+                                val firstCoverUrl = remember(firstCover) { firstCover?.let { viewModel.getCoverUrl(it, 500) } }
+                                if (firstCoverUrl != null && !isExcludedPlaylist) {
+                                    CoverArtImage(
+                                        url = firstCoverUrl,
                                         modifier = Modifier.fillMaxSize(),
                                         cornerRadius = 8.dp,
                                         sizePx = 500
@@ -206,12 +218,14 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
             itemsIndexed(state.visibleSongs, key = { _, song -> song.id }, contentType = { _, _ -> "song" }) { index, song ->
                 val isPlaying = currentSongId?.id == song.id
                 val isLiked = likedIds.contains(song.id) || song.isStarred
+                val isDisliked = dislikedIds.contains(song.id)
                 val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                 SongRowModern(
                     song = song,
                     coverUrl = coverUrl,
                     isPlaying = isPlaying,
                     isLiked = isLiked,
+                    isDisliked = isDisliked,
                     trackNumber = null,
                     showCover = true,
                     onClick = { viewModel.playSongs(index) },
@@ -252,6 +266,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                 }
             }
         }
+        } // ProvidePauseImageLoadsDuringScroll
 
         if (songToRemove != null) {
             RemoveLikeBottomSheet(

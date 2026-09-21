@@ -28,7 +28,7 @@ data class ArtistDetailUiState(
 @HiltViewModel
 class ArtistDetailViewModel @Inject constructor(
     private val repository: MusicRepository,
-    private val playerManager: PlayerManager,
+    val playerManager: PlayerManager,
     private val starredRepository: StarredRepository,
     private val dislikedRepository: DislikedRepository
 ) : ViewModel() {
