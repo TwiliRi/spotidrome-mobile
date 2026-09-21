@@ -103,6 +103,7 @@ data class Album(
     val starred: String? = null
 )
 
+@Immutable
 @Serializable
 data class AlbumDetail(
     val id: String,
@@ -172,6 +173,7 @@ data class Playlist(
     val coverArt: String? = null
 )
 
+@Immutable
 @Serializable
 data class PlaylistDetail(
     val id: String,

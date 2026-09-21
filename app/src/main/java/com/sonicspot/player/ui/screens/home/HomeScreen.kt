@@ -75,22 +75,21 @@ fun HomeScreen(
         }
     }
 
-    val quickAlbums by remember(state.recentAlbums, state.newestAlbums) {
-        derivedStateOf {
-            (state.recentAlbums.take(4) + state.newestAlbums.take(2)).distinctBy { it.id }.take(6)
-        }
+    val quickAlbums = remember(state.recentAlbums, state.newestAlbums) {
+        (state.recentAlbums.take(4) + state.newestAlbums.take(2)).distinctBy { it.id }.take(6)
     }
 
-    // FIX: derivedStateOf для плейлистов чтобы не фильтровать каждый рекомпоз
-    // Логи показали критичный путь 734ms на MAIN с extra 650ms из-за фильтрации + Coil
-    val pinnedPlaylists by remember(state.playlists, state.pinnedIds) {
-        derivedStateOf { state.playlists.filter { state.pinnedIds.contains(it.id) } }
+    // Фильтры считаются только при изменении данных (remember с ключами).
+    // derivedStateOf здесь не нужен и заставлял пересчитывать фильтры на каждое
+    // изменение ЛЮБОГО поля state (например isRefreshing).
+    val pinnedPlaylists = remember(state.playlists, state.pinnedIds) {
+        state.playlists.filter { state.pinnedIds.contains(it.id) }
     }
-    val publicPlaylists by remember(state.playlists, state.pinnedIds) {
-        derivedStateOf { state.playlists.filter { it.public && !state.pinnedIds.contains(it.id) && it.name != com.sonicspot.player.data.repository.DislikedRepository.EXCLUDED_PLAYLIST_NAME } }
+    val publicPlaylists = remember(state.playlists, state.pinnedIds) {
+        state.playlists.filter { it.public && !state.pinnedIds.contains(it.id) && it.name != com.sonicspot.player.data.repository.DislikedRepository.EXCLUDED_PLAYLIST_NAME }
     }
-    val privatePlaylists by remember(state.playlists, state.pinnedIds) {
-        derivedStateOf { state.playlists.filter { !it.public && !state.pinnedIds.contains(it.id) && it.name != com.sonicspot.player.data.repository.DislikedRepository.EXCLUDED_PLAYLIST_NAME } }
+    val privatePlaylists = remember(state.playlists, state.pinnedIds) {
+        state.playlists.filter { !it.public && !state.pinnedIds.contains(it.id) && it.name != com.sonicspot.player.data.repository.DislikedRepository.EXCLUDED_PLAYLIST_NAME }
     }
 
     val pullState = rememberPullToRefreshState()
@@ -345,20 +344,16 @@ fun HomeScreen(
                         SectionHeaderModern(title = "Чтобы вернуться")
                         // Показываем только 3 сразу, остальные по кнопке "Показать еще" как в Spotify
                         var visibleRandom by remember(state.randomSongs.size) { mutableIntStateOf(3) }
-                        val randomVisible by remember(state.randomSongs, visibleRandom) {
-                            derivedStateOf { state.randomSongs.take(visibleRandom) }
+                        val randomVisible = remember(state.randomSongs, visibleRandom) {
+                            state.randomSongs.take(visibleRandom)
                         }
                         Column {
                             randomVisible.forEachIndexed { idx, song ->
-                                val isPlaying by remember(currentSongId, song.id) {
-                                    derivedStateOf { currentSongId?.id == song.id }
-                                }
-                                val isLiked by remember(likedIds, song.id, song.isStarred) {
-                                    derivedStateOf { likedIds.contains(song.id) || song.isStarred }
-                                }
-                                val isDisliked by remember(dislikedIds, song.id) {
-                                    derivedStateOf { dislikedIds.contains(song.id) }
-                                }
+                                // Обычные вычисления: дешевле, чем remember+derivedStateOf с
+                                // глубоким equals по Song на каждый рекомпоз родителя
+                                val isPlaying = currentSongId?.id == song.id
+                                val isLiked = likedIds.contains(song.id) || song.isStarred
+                                val isDisliked = dislikedIds.contains(song.id)
                                 val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                                 SongRowModern(
                                     song = song,

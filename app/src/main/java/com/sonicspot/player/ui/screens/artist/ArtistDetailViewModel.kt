@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.artist
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.ArtistDetail
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class ArtistDetailUiState(
     val isLoading: Boolean = true,
     val artist: ArtistDetail? = null,

@@ -138,7 +138,10 @@ object PerformanceTracer {
             span.isMainThread -> "MAIN"
             else -> "BG"
         }
-        if (dur > SLOW_THRESHOLD_MS || span.isMainThread) {
+        // Логируем ТОЛЬКО медленные спаны. Раньше сюда попадал КАЖДЫЙ main-спан
+        // (даже 0.1мс) — сотни строк logcat на каждую загрузку экрана, и в debug-сборке
+        // сам logcat добавлял джанк. Быстрые спаны и так видны в DebugOverlay.
+        if (dur > SLOW_THRESHOLD_MS) {
             Log.d(TAG, "$icon [$tag] ${dur.format()}ms thread=${span.thread} main=${span.isMainThread} ${span.extra}")
         }
         if (dur > VERY_SLOW_THRESHOLD_MS && span.isMainThread) {

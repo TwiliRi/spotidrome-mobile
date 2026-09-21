@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.sonicspot.player.util.CoverArt
 import com.sonicspot.player.data.model.Album
@@ -38,52 +37,34 @@ import com.sonicspot.player.data.model.Artist
 import com.sonicspot.player.data.model.Playlist
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.theme.*
-import kotlinx.coroutines.flow.distinctUntilChanged
 
-// ==================== Глобальный флаг "приостанови загрузку обложек" ====================
+// ==================== ProvidePauseImageLoadsDuringScroll ====================
 //
-// Проблема: во время быстрого флинга LazyColumn/LazyRow в зоне видимости на мгновение
-// появляются десятки ячеек. Coil немедленно начинает для всех фетч + декод, забивает
-// все ядра декодами и роняет fps. Spotify/Instagram/Google Photos на флинге просто
-// приостанавливают новые загрузки и показывают плейсхолдер; как только скролл
-// останавливается — начинают подгружать видимые. Это даёт 60fps на флинге.
+// ВАЖНО: прежняя реализация «паузы загрузок на флинге» через CompositionLocal была
+// ГЛАВНОЙ причиной джанка на всех экранах: флаг LocalPauseImageLoads менялся в
+// момент начала/конца СКОЛЛА, из-за чего CompositionLocal инвалидировал ВЕСЬ список,
+// все видимые карточки пересобирались, а CoverArtImage пересоздавал ImageRequest для
+// каждой обложки. То есть каждый жест скролла стоил полной перекомпозиции окна.
 //
-// Использование: оборачиваем список в ProvidePauseImageLoadsDuringScroll(listState) { ... }
-// и флаг сам становится true во время скролла.
-val LocalPauseImageLoads = compositionLocalOf { false }
+// Защиту от «47 декодов одновременно» теперь несёт ограниченный пул потоков в
+// SonicSpotApp (3 декодера / 4 фетчера) — этого достаточно, а UI при этом вообще не
+// пересобирается. Обёртка оставлена для совместимости со старыми вызовами и
+// намеренно НЕ создаёт состояний: просто отрисовывает контент.
 
-/**
- * Ставит LocalPauseImageLoads в true, пока список находится в движении (флинг или скролл).
- * Когда скролл заканчивается — становится false, и Coil начинает грузить то что видно.
- */
 @Composable
 fun ProvidePauseImageLoadsDuringScroll(
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    @Suppress("UNUSED_PARAMETER") listState: androidx.compose.foundation.lazy.LazyListState,
     content: @Composable () -> Unit
 ) {
-    val isScrolling by remember {
-        snapshotFlow { listState.isScrollInProgress }
-            .distinctUntilChanged()
-    }.collectAsState(initial = listState.isScrollInProgress)
-
-    CompositionLocalProvider(LocalPauseImageLoads provides isScrolling) {
-        content()
-    }
+    content()
 }
 
 @Composable
 fun ProvidePauseImageLoadsDuringScroll(
-    listState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    @Suppress("UNUSED_PARAMETER") listState: androidx.compose.foundation.lazy.grid.LazyGridState,
     content: @Composable () -> Unit
 ) {
-    val isScrolling by remember {
-        snapshotFlow { listState.isScrollInProgress }
-            .distinctUntilChanged()
-    }.collectAsState(initial = listState.isScrollInProgress)
-
-    CompositionLocalProvider(LocalPauseImageLoads provides isScrolling) {
-        content()
-    }
+    content()
 }
 
 // ==================== COVER ART - 60 FPS, HARDWARE БИТМАПЫ, НЕТ ПЕРЕЗАГРУЗКИ ====================
@@ -109,7 +90,6 @@ fun CoverArtImage(
     sizePx: Int = 300
 ) {
     val context = LocalContext.current
-    val pauseLoads = LocalPauseImageLoads.current
 
     // Ключ диска — по ID обложки + квантованному размеру (LIST/LARGE), а не по всему URL
     // с солью (и тогда одна и та же обложка, скачанная до и после перелогина, лежит в
@@ -131,7 +111,11 @@ fun CoverArtImage(
         }
     }
 
-    val imageRequest = remember(url, sizePx, cacheKeys, pauseLoads) {
+    // ВАЖНО: ImageRequest создаётся ровно один раз на (url, sizePx) и не пересоздаётся
+    // при скролле. Раньше здесь был ещё ключ pauseLoads — из-за него на старте/остановке
+    // скролла все запросы пересоздавались разом (фриз на каждом жесте). Ограничение
+    // параллелизма декода несут пулы потоков из SonicSpotApp (3 декодера / 4 фетчера).
+    val imageRequest = remember(url, sizePx, cacheKeys) {
         val (diskKey, memoryKey) = cacheKeys ?: return@remember null
         ImageRequest.Builder(context)
             .data(url)
@@ -144,12 +128,6 @@ fun CoverArtImage(
             // "перезагрузки обложек" при скролле.
             .memoryCacheKey(memoryKey)
             .diskCacheKey(diskKey)
-            // Во время флинга — только кэш (память + диск), не ходить в сеть и
-            // не декодить не закэшированное. Как только скролл останавливается,
-            // флаг снимается, и новые видимые картинки догружаются в спокойном
-            // режиме. При этом попадания в кэш работают мгновенно, так что уже
-            // загруженные обложки не исчезают и не перезагружаются.
-            .networkCachePolicy(if (pauseLoads) CachePolicy.DISABLED else CachePolicy.ENABLED)
             .build()
     }
 

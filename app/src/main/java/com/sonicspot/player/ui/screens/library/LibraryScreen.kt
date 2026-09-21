@@ -42,6 +42,12 @@ fun LibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    // Геттеры LibraryUiState (pinnedPlaylists и пр.) фильтруют весь список на КАЖДОЕ
+    // обращение. Мемоизируем: пересчёт только при реальном изменении данных.
+    val pinnedPlaylists = remember(state.playlists, state.pinnedIds) { state.pinnedPlaylists }
+    val privatePlaylists = remember(state.playlists, state.pinnedIds) { state.privatePlaylists }
+    val publicPlaylists = remember(state.playlists, state.pinnedIds) { state.publicPlaylists }
+    val excludedPlaylist = remember(state.playlists) { state.excludedPlaylist }
     var selectedTab by remember { mutableStateOf(0) }
     var isGridView by remember { mutableStateOf(false) }
     val tabs = listOf("Плейлисты", "Исполнители", "Альбомы")
@@ -82,7 +88,7 @@ fun LibraryScreen(
             // Убран второй ряд с выбором библиотек в строчку (Все библиотеки + список папок)
 
             LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(tabs.size) { idx ->
+                items(tabs.size, key = { "tab_$it" }, contentType = { "tab" }) { idx ->
                     SpotifyFilterChip(text = tabs[idx], selected = selectedTab == idx, onClick = { selectedTab = idx })
                 }
             }
@@ -127,9 +133,9 @@ fun LibraryScreen(
                                 }
                             }
                         }
-                        if (state.excludedPlaylist != null) {
+                        if (excludedPlaylist != null) {
                             item {
-                                val pl = state.excludedPlaylist!!
+                                val pl = excludedPlaylist!!
                                 Column(modifier = Modifier.width(168.dp).clickable { onPlaylistClick(pl.id) }) {
                                     Box(
                                         modifier = Modifier.size(168.dp).clip(RoundedCornerShape(8.dp)).background(
@@ -143,7 +149,7 @@ fun LibraryScreen(
                                 }
                             }
                         }
-                        items(state.pinnedPlaylists, key = { it.id }) { pl ->
+                        items(pinnedPlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
@@ -153,7 +159,7 @@ fun LibraryScreen(
                                 onPinClick = { selectedPlaylistForMenu = pl; showPlaylistSheet = true }
                             )
                         }
-                        items(state.privatePlaylists, key = { it.id }) { pl ->
+                        items(privatePlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
@@ -163,7 +169,7 @@ fun LibraryScreen(
                                 onPinClick = { selectedPlaylistForMenu = pl; showPlaylistSheet = true }
                             )
                         }
-                        items(state.publicPlaylists, key = { it.id }) { pl ->
+                        items(publicPlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
@@ -176,9 +182,9 @@ fun LibraryScreen(
                     }
                 } else {
                     LazyColumn(contentPadding = PaddingValues(bottom = 100.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        if (state.pinnedPlaylists.isNotEmpty()) {
+                        if (pinnedPlaylists.isNotEmpty()) {
                             item { SectionHeaderSmall(title = "Закрепленные") }
-                            items(state.pinnedPlaylists, key = { it.id }) { pl ->
+                            items(pinnedPlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),
@@ -190,7 +196,7 @@ fun LibraryScreen(
                             }
                         }
 
-                        if (state.starredSongs.isNotEmpty() || state.excludedPlaylist != null) {
+                        if (state.starredSongs.isNotEmpty() || excludedPlaylist != null) {
                             item { SectionHeaderSmall(title = "Системные") }
 
                             if (state.starredSongs.isNotEmpty()) {
@@ -206,9 +212,9 @@ fun LibraryScreen(
                                 }
                             }
 
-                            if (state.excludedPlaylist != null && !state.pinnedIds.contains(state.excludedPlaylist!!.id)) {
+                            if (excludedPlaylist != null && !state.pinnedIds.contains(excludedPlaylist!!.id)) {
                                 item {
-                                    val pl = state.excludedPlaylist!!
+                                    val pl = excludedPlaylist!!
                                     SystemPlaylistRow(
                                         title = pl.name,
                                         subtitle = "Системный • ${pl.songCount} треков • не в рекомендациях",
@@ -222,9 +228,9 @@ fun LibraryScreen(
                             }
                         }
 
-                        if (state.privatePlaylists.isNotEmpty()) {
-                            item { SectionHeaderSmall(title = "Личные • ${state.privatePlaylists.size}") }
-                            items(state.privatePlaylists, key = { it.id }) { pl ->
+                        if (privatePlaylists.isNotEmpty()) {
+                            item { SectionHeaderSmall(title = "Личные • ${privatePlaylists.size}") }
+                            items(privatePlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),
@@ -236,9 +242,9 @@ fun LibraryScreen(
                             }
                         }
 
-                        if (state.publicPlaylists.isNotEmpty()) {
-                            item { SectionHeaderSmall(title = "Общие • ${state.publicPlaylists.size}") }
-                            items(state.publicPlaylists, key = { it.id }) { pl ->
+                        if (publicPlaylists.isNotEmpty()) {
+                            item { SectionHeaderSmall(title = "Общие • ${publicPlaylists.size}") }
+                            items(publicPlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),

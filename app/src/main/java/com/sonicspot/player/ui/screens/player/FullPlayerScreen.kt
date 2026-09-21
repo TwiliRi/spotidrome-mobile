@@ -17,10 +17,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -37,6 +37,7 @@ import com.sonicspot.player.ui.components.SleepTimerBottomSheet
 import com.sonicspot.player.ui.components.SleepTimerButton
 import com.sonicspot.player.ui.components.SleepTimerCompactIconButton
 import com.sonicspot.player.ui.theme.*
+import kotlinx.coroutines.flow.StateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,7 +51,10 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
     val upcoming by viewModel.playerManager.upcomingQueue.collectAsState()
     val lyricsState by viewModel.lyricsState.collectAsState()
     val artistInfo by viewModel.artistInfo.collectAsState()
-    val position by viewModel.playerManager.fullPlayerPositionFlow.collectAsState()
+    // ВАЖНО: fullPlayerPositionFlow тикает на 10 Гц. Раньше он собирался ЗДЕСЬ, в корне
+    // экрана — весь плеер (градиенты, обложка, слайдер, очередь) пересобирался 20 раз в
+    // секунду и грел телефон до системного троттлинга. Теперь позицию собирают только
+    // мелкие изолированные композиции (слайдер, блоки текстов).
     val libraryInfo by viewModel.libraryInfo.collectAsState()
     val sleepTimerState by viewModel.sleepTimerState.collectAsState()
 
@@ -82,15 +86,17 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
     val isLiked = likedIds.contains(song.id) || song.isStarred
     val isDisliked = dislikedIds.contains(song.id)
     val context = LocalContext.current
-    // FIX: 600px для большого плеера - нужно для 0.85f ширины (~300dp = 600px 2x), но без hardware чтобы избежать GPU upload
+    // FIX: 600px для большого плеера (0.85f ширины ~300dp = 600px 2x).
+    // ВАЖНО: allowHardware(false)+RGB_565 — это SOFTWARE-битмап, который графический
+    // конвейер вынужден заливать в GL-текстуру на КАЖДОМ кадре. Прежний комментарий про
+    // «избежать GPU upload» был ошибочным: ровно наоборот. HARDWARE-битмап живёт в
+    // графической памяти и рисуется без аплоада — это и есть плавность.
     val coverUrlLarge = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 600) }
-    val coverRequest = remember(coverUrlLarge) {
+    val coverRequest = remember(coverUrlLarge, song.coverArt) {
         ImageRequest.Builder(context)
             .data(coverUrlLarge)
             .size(600)
             .crossfade(false)
-            .allowHardware(false)
-            .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
             .memoryCacheKey("${song.coverArt}-600")
             .diskCacheKey("${song.coverArt}-600")
             .build()
@@ -218,7 +224,7 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                 item {
                     LyricsSection(
                         lyricsState = lyricsState,
-                        currentPositionMs = position,
+                        positionFlow = viewModel.playerManager.fullPlayerPositionFlow,
                         libraryName = libraryInfo.libraryName ?: libraryInfo.selectedFolderName,
                         songPath = libraryInfo.songPath,
                         libraryId = libraryInfo.libraryId,
@@ -256,7 +262,7 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                 artistName = song.artist ?: "Unknown",
                 coverUrl = coverUrlLarge,
                 lyricsState = lyricsState,
-                currentPositionMs = position,
+                positionFlow = viewModel.playerManager.fullPlayerPositionFlow,
                 isPlaying = isPlaying,
                 onClose = { showFullscreenLyrics = false },
                 onSeekTo = { ms -> viewModel.seekTo(ms) },
@@ -321,7 +327,7 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
 @Composable
 private fun LyricsSection(
     lyricsState: LyricsUiState,
-    currentPositionMs: Long,
+    positionFlow: StateFlow<Long>,
     libraryName: String? = null,
     songPath: String? = null,
     libraryId: Int? = null,
@@ -422,7 +428,7 @@ private fun LyricsSection(
             is LyricsUiState.Success -> {
                 val result = lyricsState.result
                 if (result.isSynced && result.syncedLines.isNotEmpty()) {
-                    SyncedLyricsPreview(lines = result.syncedLines, currentPositionMs = currentPositionMs, onSeekTo = onSeekTo, onOpenFullscreen = onOpenFullscreen)
+                    SyncedLyricsPreview(lines = result.syncedLines, positionFlow = positionFlow, onSeekTo = onSeekTo, onOpenFullscreen = onOpenFullscreen)
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SpotifyColors.Gray.copy(alpha = 0.6f)).padding(16.dp).clickable { onOpenFullscreen() }) {
                         Column {
@@ -452,33 +458,60 @@ private fun LyricsSection(
     }
 }
 
+private fun findLyricIndex(lines: List<LyricLine>, positionMs: Long): Int {
+    if (lines.isEmpty()) return -1
+    var low = 0
+    var high = lines.size - 1
+    var result = -1
+    while (low <= high) {
+        val mid = (low + high) / 2
+        if (lines[mid].timestampMs <= positionMs) {
+            result = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return result
+}
+
+/**
+ * Обёртка превью текста. Подписка на позицию (тик 10 Гц) живёт ТОЛЬКО в LaunchedEffect
+ * и пишет лишь номер текущей строки. Контент — отдельная скippable-композиция:
+ * она пересобирается исключительно при смене строки, а не на каждый тик.
+ */
 @Composable
 private fun SyncedLyricsPreview(
     lines: List<LyricLine>,
-    currentPositionMs: Long,
+    positionFlow: StateFlow<Long>,
     onSeekTo: (Long) -> Unit,
     onOpenFullscreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currentIndex by remember(currentPositionMs, lines) {
-        derivedStateOf {
-            if (lines.isEmpty()) -1 else {
-                var low = 0
-                var high = lines.size - 1
-                var result = -1
-                while (low <= high) {
-                    val mid = (low + high) / 2
-                    if (lines[mid].timestampMs <= currentPositionMs) {
-                        result = mid
-                        low = mid + 1
-                    } else {
-                        high = mid - 1
-                    }
-                }
-                result
-            }
+    var currentIndex by remember(lines) { mutableIntStateOf(-1) }
+    LaunchedEffect(lines) {
+        positionFlow.collect { pos ->
+            val idx = findLyricIndex(lines, pos)
+            if (idx != currentIndex) currentIndex = idx
         }
     }
+    SyncedLyricsPreviewContent(
+        lines = lines,
+        currentIndex = currentIndex,
+        onSeekTo = onSeekTo,
+        onOpenFullscreen = onOpenFullscreen,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun SyncedLyricsPreviewContent(
+    lines: List<LyricLine>,
+    currentIndex: Int,
+    onSeekTo: (Long) -> Unit,
+    onOpenFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0) {
@@ -533,7 +566,7 @@ private fun FullscreenLyricsScreen(
     artistName: String,
     coverUrl: String?,
     lyricsState: LyricsUiState,
-    currentPositionMs: Long,
+    positionFlow: StateFlow<Long>,
     isPlaying: Boolean,
     onClose: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -543,13 +576,18 @@ private fun FullscreenLyricsScreen(
     onRetry: () -> Unit
 ) {
     val context = LocalContext.current
+    // FIX: фон с «размытием» без Modifier.blur. Полноэкранный blur(20.dp) — один из
+    // самых дорогих эффектов на Android (полный проход RenderEffect по экрану на каждом
+    // кадре; на API < 31 вообще software). Плюс фон был SOFTWARE-битмапом.
+    // Приём как у Spotify: декодируем КРОШЕЧНУЮ копию (64px, HARDWARE) и растягиваем
+    // билинейно (FilterQuality.Medium) — визуально тяжёлый blur стоит почти ноль.
     val coverRequestSmall = remember(coverUrl) {
         ImageRequest.Builder(context)
             .data(coverUrl)
-            .size(100)
+            .size(64)
             .crossfade(false)
-            .allowHardware(false)
-            .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
+            .memoryCacheKey("${coverUrl}-blur64")
+            .diskCacheKey("${coverUrl}-blur64")
             .build()
     }
 
@@ -557,9 +595,10 @@ private fun FullscreenLyricsScreen(
         AsyncImage(
             model = coverRequestSmall,
             contentDescription = null,
-            modifier = Modifier.fillMaxSize().blur(20.dp),
+            modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
-            alpha = 0.3f
+            alpha = 0.35f,
+            filterQuality = FilterQuality.Medium
         )
         Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.8f), SpotifyColors.Black))))
 
@@ -635,7 +674,7 @@ private fun FullscreenLyricsScreen(
                     is LyricsUiState.Success -> {
                         val result = lyricsState.result
                         if (result.isSynced) {
-                            FullscreenSyncedLyrics(lines = result.syncedLines, currentPositionMs = currentPositionMs, onSeekTo = onSeekTo)
+                            FullscreenSyncedLyrics(lines = result.syncedLines, positionFlow = positionFlow, onSeekTo = onSeekTo)
                         } else {
                             LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp)) {
                                 item {
@@ -647,53 +686,79 @@ private fun FullscreenLyricsScreen(
                 }
             }
 
-            Column(modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.4f)).padding(horizontal = 24.dp, vertical = 16.dp)) {
-                val progress = if (lyricsState is LyricsUiState.Success) {
-                    val total = (lyricsState.result.syncedLines.lastOrNull()?.timestampMs ?: 0L).coerceAtLeast(1L)
-                    (currentPositionMs.toFloat() / total).coerceIn(0f, 1f)
-                } else 0f
-                Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(SpotifyColors.White.copy(alpha = 0.2f))) {
-                    Box(modifier = Modifier.fillMaxWidth(progress).height(4.dp).clip(RoundedCornerShape(2.dp)).background(SpotifyColors.White))
-                }
-                Spacer(Modifier.height(16.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onPrev, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipPrevious, null, tint = SpotifyColors.White, modifier = Modifier.size(28.dp)) }
-                    IconButton(onClick = onPlayPause, modifier = Modifier.size(56.dp).clip(CircleShape).background(SpotifyColors.White)) {
-                        Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = SpotifyColors.Black, modifier = Modifier.size(28.dp))
-                    }
-                    IconButton(onClick = onNext, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipNext, null, tint = SpotifyColors.White, modifier = Modifier.size(28.dp)) }
-                }
-            }
+            FullscreenBottomControls(
+                positionFlow = positionFlow,
+                lyricsState = lyricsState,
+                isPlaying = isPlaying,
+                onPrev = onPrev,
+                onPlayPause = onPlayPause,
+                onNext = onNext
+            )
         }
     }
 }
 
+/**
+ * Нижняя панель полноэкранного текста: единственное место на этом экране, где позиция
+ * (10 Гц) вызывает рекомпозицию — и только этой крошечной панели с тремя кнопками.
+ */
+@Composable
+private fun FullscreenBottomControls(
+    positionFlow: StateFlow<Long>,
+    lyricsState: LyricsUiState,
+    isPlaying: Boolean,
+    onPrev: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit
+) {
+    val positionMs by positionFlow.collectAsState()
+    Column(modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.4f)).padding(horizontal = 24.dp, vertical = 16.dp)) {
+        val progress = if (lyricsState is LyricsUiState.Success) {
+            val total = (lyricsState.result.syncedLines.lastOrNull()?.timestampMs ?: 0L).coerceAtLeast(1L)
+            (positionMs.toFloat() / total).coerceIn(0f, 1f)
+        } else 0f
+        Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(SpotifyColors.White.copy(alpha = 0.2f))) {
+            Box(modifier = Modifier.fillMaxWidth(progress).height(4.dp).clip(RoundedCornerShape(2.dp)).background(SpotifyColors.White))
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onPrev, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipPrevious, null, tint = SpotifyColors.White, modifier = Modifier.size(28.dp)) }
+            IconButton(onClick = onPlayPause, modifier = Modifier.size(56.dp).clip(CircleShape).background(SpotifyColors.White)) {
+                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = SpotifyColors.Black, modifier = Modifier.size(28.dp))
+            }
+            IconButton(onClick = onNext, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipNext, null, tint = SpotifyColors.White, modifier = Modifier.size(28.dp)) }
+        }
+    }
+}
+
+/**
+ * Обёртка полноэкранного текста: тик позиции обновляет только номер строки
+ * (LaunchedEffect без рекомпозиции), контент пересобирается при смене строки.
+ */
 @Composable
 private fun FullscreenSyncedLyrics(
     lines: List<LyricLine>,
-    currentPositionMs: Long,
+    positionFlow: StateFlow<Long>,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currentIndex by remember(currentPositionMs, lines) {
-        derivedStateOf {
-            if (lines.isEmpty()) -1 else {
-                var low = 0
-                var high = lines.size - 1
-                var result = -1
-                while (low <= high) {
-                    val mid = (low + high) / 2
-                    if (lines[mid].timestampMs <= currentPositionMs) {
-                        result = mid
-                        low = mid + 1
-                    } else {
-                        high = mid - 1
-                    }
-                }
-                result
-            }
+    var currentIndex by remember(lines) { mutableIntStateOf(-1) }
+    LaunchedEffect(lines) {
+        positionFlow.collect { pos ->
+            val idx = findLyricIndex(lines, pos)
+            if (idx != currentIndex) currentIndex = idx
         }
     }
+    FullscreenSyncedLyricsContent(lines = lines, currentIndex = currentIndex, onSeekTo = onSeekTo, modifier = modifier)
+}
+
+@Composable
+private fun FullscreenSyncedLyricsContent(
+    lines: List<LyricLine>,
+    currentIndex: Int,
+    onSeekTo: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0) {
@@ -721,8 +786,7 @@ private fun FullscreenSyncedLyrics(
             )
             val fontSize by animateFloatAsState(
                 targetValue = if (isCurrent) 26f else 20f,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                label = "fontSize"
+                animationSpec = tween(250), label = "fontSize"
             )
             val alpha by animateFloatAsState(
                 targetValue = if (isCurrent) 1f else if (isPast) 0.6f else 0.4f,

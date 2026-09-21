@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.playlist
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.PlaylistDetail
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class PlaylistDetailUiState(
     val isLoading: Boolean = true,
     val playlist: PlaylistDetail? = null,

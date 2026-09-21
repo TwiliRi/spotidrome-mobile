@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.library
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.local.PreferencesManager
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class LibraryUiState(
     val isLoading: Boolean = true,
     val isRefreshing: Boolean = false,

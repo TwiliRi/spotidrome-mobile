@@ -105,7 +105,7 @@ fun RecentlyAddedScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(10) {
+                        items(10, key = { "shimmer_$it" }, contentType = { "shimmer" }) {
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 ShimmerPlaceholder(modifier = Modifier.fillMaxWidth().aspectRatio(1f))
                                 Spacer(Modifier.height(8.dp))

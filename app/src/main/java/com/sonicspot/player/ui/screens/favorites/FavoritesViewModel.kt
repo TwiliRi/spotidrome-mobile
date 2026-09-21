@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.favorites
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.Song
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class FavoritesUiState(
     val isLoading: Boolean = true,
     val songs: List<Song> = emptyList(),

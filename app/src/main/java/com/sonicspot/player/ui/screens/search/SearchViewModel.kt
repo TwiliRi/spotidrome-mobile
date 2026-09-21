@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.search
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.Album
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class SearchUiState(
     val query: String = "",
     val isLoading: Boolean = false,

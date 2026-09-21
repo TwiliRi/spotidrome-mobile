@@ -776,6 +776,7 @@ class PlayerManager @Inject constructor(
         progressJob?.cancel()
         progressJob = scope.launch {
             var lastStateUpdate = 0L
+            var lastUiUpdate = 0L
             while (isActive) {
                 try {
                     val player = exoPlayer ?: break
@@ -783,10 +784,17 @@ class PlayerManager @Inject constructor(
                     val pos = try { player.currentPosition } catch (_: Exception) { 0L }
                     val dur = try { player.duration.coerceAtLeast(0L) } catch (_: Exception) { 0L }
                     val progress = if (dur > 0) pos.toFloat() / dur else 0f
-                    _fullPlayerPosition.value = pos
-                    _fullPlayerProgress.value = progress
                     val now = System.currentTimeMillis()
-                    if (now - lastStateUpdate > 500) {
+                    // UI-потоки прогресса публикуются максимум 10 раз в секунду: поллеру
+                    // нужен тик 50 мс только для сторожа зависаний/кроссфейда, а подписчики
+                    // (слайдер, тексты) не должны пересобираться 20 раз в секунду — это была
+                    // главная нагрузка на CPU при открытом плеере (тепловой троттлинг).
+                    if (now - lastUiUpdate >= 100) {
+                        _fullPlayerPosition.value = pos
+                        _fullPlayerProgress.value = progress
+                        lastUiUpdate = now
+                    }
+                    if (now - lastStateUpdate >= 1000) {
                         _playerState.update { it.copy(currentPosition = pos, duration = dur, progress = progress) }
                         lastStateUpdate = now
                     }

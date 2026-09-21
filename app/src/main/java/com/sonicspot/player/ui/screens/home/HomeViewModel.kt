@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.home
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.local.CacheManager
@@ -31,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+@Immutable
 data class HomeUiState(
     val isLoading: Boolean = true,
     val isRefreshing: Boolean = false,

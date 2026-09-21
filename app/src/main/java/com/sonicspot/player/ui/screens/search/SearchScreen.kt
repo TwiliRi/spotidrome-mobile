@@ -40,6 +40,9 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    // Ряды по2 считаются один раз на изменение выдачи, а не на каждый рекомпоз/тик
+    val artistRows = remember(state.visibleArtists) { state.visibleArtists.chunked(2) }
+    val albumRows = remember(state.visibleAlbums) { state.visibleAlbums.chunked(2) }
     val currentSongId by viewModel.playerManager.currentSongFlow.collectAsState()
     val likedIds by viewModel.likedIds.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
@@ -183,7 +186,7 @@ fun SearchScreen(
                         item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
                             SectionHeaderModern(title = "Обзор")
                         }
-                        items(browseCategories) { (title, color) ->
+                        items(browseCategories, key = { it.first }) { (title, color) ->
                             CategoryCard(title = title, color = color, onClick = {
                                 viewModel.onQueryChange(title)
                                 // При клике на категорию сразу фокусируем? Нет, просто ищем
@@ -211,7 +214,8 @@ fun SearchScreen(
 
                     if (state.artists.isNotEmpty()) {
                         item { SectionHeaderModern(title = "Исполнители • ${state.visibleArtists.size} из ${state.artists.size}") }
-                        items(state.visibleArtists.chunked(2)) { row ->
+                        items(artistRows.size, key = { "artist_row_${artistRows[it].firstOrNull()?.id}" }, contentType = { "artist_row" }) { rowIdx ->
+                            val row = artistRows[rowIdx]
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 row.forEach { artist ->
                                     ArtistCardModern(artist = artist, coverUrl = viewModel.getCoverUrl(artist.coverArt, 240), onClick = { onArtistClick(artist.id) }, modifier = Modifier.weight(1f))
@@ -232,7 +236,8 @@ fun SearchScreen(
                             Spacer(Modifier.height(16.dp))
                             SectionHeaderModern(title = "Альбомы • ${state.visibleAlbums.size} из ${state.albums.size}")
                         }
-                        items(state.visibleAlbums.chunked(2)) { row ->
+                        items(albumRows.size, key = { "album_row_${albumRows[it].firstOrNull()?.id}" }, contentType = { "album_row" }) { rowIdx ->
+                            val row = albumRows[rowIdx]
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 row.forEach { album ->
                                     AlbumCardModern(album = album, coverUrl = viewModel.getCoverUrl(album.coverArt, 304), onClick = { onAlbumClick(album.id) }, modifier = Modifier.weight(1f))
