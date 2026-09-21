@@ -41,6 +41,7 @@ class PreferencesManager @Inject constructor(
     private val searchHistoryJsonKey = stringPreferencesKey("search_history_json")
     private val searchHistoryVersionKey = intPreferencesKey("search_history_version")
     private val notificationButtonsKey = stringSetPreferencesKey("notification_buttons")
+    private val librarySwitcherModeKey = stringPreferencesKey("library_switcher_mode")
 
     val isLoggedIn: Flow<Boolean> = context.dataStore.data.map { prefs ->
         !prefs[serverUrlKey].isNullOrEmpty() && !prefs[usernameKey].isNullOrEmpty() && !prefs[tokenKey].isNullOrEmpty()
@@ -72,6 +73,11 @@ class PreferencesManager @Inject constructor(
     // Состав кнопок в шторке уведомления: любые комбинации лайк/дизлайк/шамбл
     val notificationButtonsFlow: Flow<Set<String>> = context.dataStore.data.map { prefs ->
         prefs[notificationButtonsKey] ?: NOTIF_BUTTONS_ALL
+    }
+
+    // Способ переключения музыкальной библиотеки: меню (чип + bottom sheet) или кнопки-чипы в строку
+    val librarySwitcherModeFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[librarySwitcherModeKey] ?: LIBRARY_SWITCHER_BUTTONS
     }
 
     suspend fun saveLogin(serverUrl: String, username: String, password: String) {
@@ -156,6 +162,12 @@ class PreferencesManager @Inject constructor(
         }
     }
 
+    /** Сохраняет способ переключения библиотек. Принимает только известные значения, иначе — кнопки. */
+    suspend fun setLibrarySwitcherMode(mode: String) {
+        val normalized = if (mode == LIBRARY_SWITCHER_MENU) LIBRARY_SWITCHER_MENU else LIBRARY_SWITCHER_BUTTONS
+        context.dataStore.edit { prefs -> prefs[librarySwitcherModeKey] = normalized }
+    }
+
     suspend fun setNotificationButtons(buttons: Set<String>) {
         context.dataStore.edit { prefs -> prefs[notificationButtonsKey] = buttons }
     }
@@ -180,5 +192,11 @@ class PreferencesManager @Inject constructor(
         const val NOTIF_BTN_DISLIKE = "dislike"
         const val NOTIF_BTN_SHUFFLE = "shuffle"
         val NOTIF_BUTTONS_ALL = setOf(NOTIF_BTN_LIKE, NOTIF_BTN_DISLIKE, NOTIF_BTN_SHUFFLE)
+
+        /** Переключение библиотек через меню: чип в шапке открывает bottom sheet со списком. */
+        const val LIBRARY_SWITCHER_MENU = "menu"
+
+        /** Переключение библиотек через кнопки: строка чипов «Все библиотеки» + папки прямо на экране. */
+        const val LIBRARY_SWITCHER_BUTTONS = "buttons"
     }
 }

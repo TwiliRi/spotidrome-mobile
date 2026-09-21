@@ -131,7 +131,9 @@ fun HomeScreen(
                                     }
                                 }
                             }
-                            if (state.musicFolders.isNotEmpty()) {
+                            // Способ переключения библиотек задаётся в настройках:
+                            // «Меню» — чип, открывающий список; «Кнопки» — строка чипов ниже (showLibraryButtonsRow)
+                            if (state.showLibraryMenuChip) {
                                 LibraryChip(folderName = state.selectedFolderName, onClick = { showFolderSheet = true })
                             }
                         }
@@ -143,12 +145,13 @@ fun HomeScreen(
                         }
                     }
 
-                    if (state.musicFolders.size > 1) {
+                    // Показывается только в режиме «Кнопки библиотек» (настройка в Настройки → Медиатека)
+                    if (state.showLibraryButtonsRow) {
                         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             item(key = "all_libs") {
                                 SpotifyFilterChip(text = "Все библиотеки", selected = state.selectedFolderId == null, onClick = { viewModel.selectMusicFolder(null) })
                             }
-                            items(state.musicFolders, key = { it.id }) { folder ->
+                            items(state.musicFolders, key = { "lib_${it.id}" }) { folder ->
                                 SpotifyFilterChip(text = folder.name, selected = state.selectedFolderId == folder.id, onClick = { viewModel.selectMusicFolder(folder.id) })
                             }
                         }

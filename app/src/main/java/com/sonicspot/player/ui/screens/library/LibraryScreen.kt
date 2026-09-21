@@ -86,14 +86,16 @@ fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Слева - чип библиотеки (открывает меню выбора)
-                if (state.musicFolders.isNotEmpty()) {
+                // Слева - чип библиотеки (открывает меню выбора).
+                // В режиме «Кнопки библиотек» чипа нет — переключение строкой чипов ниже.
+                if (state.showLibraryMenuChip) {
                     LibraryChip(
                         folderName = state.selectedFolderName,
                         onClick = { showFolderSheet = true }
                     )
+                    Spacer(Modifier.weight(1f))
                 } else {
-                    Spacer(Modifier.width(1.dp))
+                    Spacer(Modifier.weight(1f))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(
@@ -107,7 +109,26 @@ fun LibraryScreen(
                 }
             }
 
-            // Убран второй ряд с выбором библиотек в строчку (Все библиотеки + список папок)
+            // Режим «Кнопки библиотек» (настройка в Настройки → Медиатека):
+            // «Все библиотеки» + список папок строкой, как на главной
+            if (state.showLibraryButtonsRow) {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item(key = "all_libs") {
+                        SpotifyFilterChip(
+                            text = "Все библиотеки",
+                            selected = state.selectedFolderId == null,
+                            onClick = { viewModel.selectMusicFolder(null) }
+                        )
+                    }
+                    items(state.musicFolders, key = { "lib_${it.id}" }) { folder ->
+                        SpotifyFilterChip(
+                            text = folder.name,
+                            selected = state.selectedFolderId == folder.id,
+                            onClick = { viewModel.selectMusicFolder(folder.id) }
+                        )
+                    }
+                }
+            }
 
             LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(tabs.size, key = { "tab_$it" }, contentType = { "tab" }) { idx ->

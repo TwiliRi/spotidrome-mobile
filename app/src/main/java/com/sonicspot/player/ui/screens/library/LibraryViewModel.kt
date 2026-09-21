@@ -48,7 +48,9 @@ data class LibraryUiState(
     val visibleArtistCount: Int = 20,
     val visibleStarredCount: Int = 20,
     val musicFolders: List<MusicFolder> = emptyList(),
-    val selectedFolderId: Int? = null
+    val selectedFolderId: Int? = null,
+    /** Как пользователь предпочитает переключать библиотеки: [PreferencesManager.LIBRARY_SWITCHER_MENU] или [PreferencesManager.LIBRARY_SWITCHER_BUTTONS]. */
+    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS
 ) {
     val pinnedPlaylists: List<Playlist> get() = playlists.filter { pinnedIds.contains(it.id) }
     val publicPlaylists: List<Playlist> get() = playlists.filter { it.public && !pinnedIds.contains(it.id) && it.name != DislikedRepository.EXCLUDED_PLAYLIST_NAME }
@@ -64,6 +66,15 @@ data class LibraryUiState(
     val hasMoreStarred get() = starredSongs.size > visibleStarredCount
 
     val selectedFolderName: String? get() = musicFolders.find { it.id == selectedFolderId }?.name
+
+    /** Переключать библиотеки нужно только когда их больше одной. */
+    private val hasSwitchableFolders: Boolean get() = musicFolders.size > 1
+
+    /** Режим «меню»: чип в шапке, открывающий список библиотек. */
+    val showLibraryMenuChip: Boolean get() = librarySwitcherMode == PreferencesManager.LIBRARY_SWITCHER_MENU && hasSwitchableFolders
+
+    /** Режим «кнопки»: строка чипов «Все библиотеки» + папки под шапкой. */
+    val showLibraryButtonsRow: Boolean get() = librarySwitcherMode != PreferencesManager.LIBRARY_SWITCHER_MENU && hasSwitchableFolders
 }
 
 @Immutable
@@ -108,6 +119,11 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             repository.selectedMusicFolderIdFlow.collect { folderId ->
                 _uiState.value = _uiState.value.copy(selectedFolderId = folderId)
+            }
+        }
+        viewModelScope.launch {
+            prefs.librarySwitcherModeFlow.collect { mode ->
+                _uiState.value = _uiState.value.copy(librarySwitcherMode = mode)
             }
         }
         viewModelScope.launch {

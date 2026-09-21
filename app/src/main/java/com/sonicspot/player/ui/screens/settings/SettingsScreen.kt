@@ -36,6 +36,7 @@ fun SettingsScreen(
     var showClearPinnedDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showNotifButtonsDialog by remember { mutableStateOf(false) }
+    var showLibrarySwitcherDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -127,6 +128,17 @@ fun SettingsScreen(
             item {
                 SettingsSectionHeader("Медиатека")
                 SettingsCard {
+                    SettingsActionRow(
+                        icon = Icons.Default.SwapHoriz,
+                        title = "Переключение библиотек",
+                        subtitle = if (state.librarySwitcherMode == PreferencesManager.LIBRARY_SWITCHER_MENU) {
+                            "Меню • список библиотек по нажатию на чип"
+                        } else {
+                            "Кнопки • строка библиотек на экране"
+                        },
+                        onClick = { showLibrarySwitcherDialog = true }
+                    )
+                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsRow(
                         icon = Icons.Default.PushPin,
                         title = "Закрепленные плейлисты",
@@ -317,6 +329,68 @@ fun SettingsScreen(
                 TextButton(onClick = { showNotifButtonsDialog = false }) { Text("Готово", color = SpotifyColors.Green) }
             }
         )
+    }
+
+    if (showLibrarySwitcherDialog) {
+        AlertDialog(
+            onDismissRequest = { showLibrarySwitcherDialog = false },
+            title = { Text("Переключение библиотек") },
+            text = {
+                Column {
+                    Text(
+                        "Как выбирать музыкальную библиотеку Navidrome. Действует и на «Главной», и в «Медиатеке» — изменения применяются сразу.",
+                        color = SpotifyColors.LightGray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LibrarySwitcherOptionRow(
+                        title = "Меню",
+                        description = "Чип в шапке открывает список библиотек (bottom sheet)",
+                        selected = state.librarySwitcherMode == PreferencesManager.LIBRARY_SWITCHER_MENU,
+                        onClick = { viewModel.setLibrarySwitcherMode(PreferencesManager.LIBRARY_SWITCHER_MENU) }
+                    )
+                    LibrarySwitcherOptionRow(
+                        title = "Кнопки библиотек",
+                        description = "Строка с «Все библиотеки» и папками прямо на экране",
+                        selected = state.librarySwitcherMode != PreferencesManager.LIBRARY_SWITCHER_MENU,
+                        onClick = { viewModel.setLibrarySwitcherMode(PreferencesManager.LIBRARY_SWITCHER_BUTTONS) }
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Если на сервере одна библиотека, переключатель скрывается в любом режиме.",
+                        color = SpotifyColors.MediumGray,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 14.sp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLibrarySwitcherDialog = false }) { Text("Готово", color = SpotifyColors.Green) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun LibrarySwitcherOptionRow(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(selectedColor = SpotifyColors.Green, unselectedColor = SpotifyColors.MediumGray)
+        )
+        Spacer(Modifier.width(4.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = SpotifyColors.White, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold))
+            Text(description, color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
+        }
     }
 }
 

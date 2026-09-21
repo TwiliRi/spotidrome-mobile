@@ -7,6 +7,7 @@ import com.sonicspot.player.data.local.CacheManager
 import com.sonicspot.player.data.local.CachedAlbum
 import com.sonicspot.player.data.local.CachedArtist
 import com.sonicspot.player.data.local.CachedHomeData
+import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.data.local.CachedPlaylist
 import com.sonicspot.player.data.local.CachedSong
 import com.sonicspot.player.data.model.Album
@@ -46,12 +47,23 @@ data class HomeUiState(
     val pinnedAlbumIds: Set<String> = emptySet(),
     val error: String? = null,
     val musicFolders: List<MusicFolder> = emptyList(),
-    val selectedFolderId: Int? = null
+    val selectedFolderId: Int? = null,
+    /** Как пользователь предпочитает переключать библиотеки: [PreferencesManager.LIBRARY_SWITCHER_MENU] или [PreferencesManager.LIBRARY_SWITCHER_BUTTONS]. */
+    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS
 ) {
     val pinnedPlaylists: List<Playlist> get() = playlists.filter { pinnedIds.contains(it.id) }
     val publicPlaylists: List<Playlist> get() = playlists.filter { it.public && !pinnedIds.contains(it.id) && it.name != DislikedRepository.EXCLUDED_PLAYLIST_NAME }
     val privatePlaylists: List<Playlist> get() = playlists.filter { !it.public && !pinnedIds.contains(it.id) && it.name != DislikedRepository.EXCLUDED_PLAYLIST_NAME }
     val selectedFolderName: String? get() = musicFolders.find { it.id == selectedFolderId }?.name
+
+    /** Переключать библиотеки нужно только когда их больше одной. */
+    private val hasSwitchableFolders: Boolean get() = musicFolders.size > 1
+
+    /** Режим «меню»: чип в шапке, открывающий список библиотек. */
+    val showLibraryMenuChip: Boolean get() = librarySwitcherMode == PreferencesManager.LIBRARY_SWITCHER_MENU && hasSwitchableFolders
+
+    /** Режим «кнопки»: строка чипов «Все библиотеки» + папки в шапке списка. */
+    val showLibraryButtonsRow: Boolean get() = librarySwitcherMode != PreferencesManager.LIBRARY_SWITCHER_MENU && hasSwitchableFolders
 }
 
 @HiltViewModel
@@ -61,7 +73,8 @@ class HomeViewModel @Inject constructor(
     private val dislikedRepository: DislikedRepository,
     private val pinnedRepository: PinnedRepository,
     private val starredRepository: StarredRepository,
-    private val cacheManager: CacheManager
+    private val cacheManager: CacheManager,
+    private val prefs: PreferencesManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -126,8 +139,23 @@ class HomeViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // selectedMusicFolderIdFlow общий для всего приложения: библиотеку можно переключить
+            // и на главной, и в «Медиатеке». Если значение изменилось не на этом экране, данные
+            // главной остались бы от прошлой библиотеки (вкладки живут в back stack с saveState),
+            // поэтому при смене библиотеки после первой загрузки перезагружаем контент.
             repository.selectedMusicFolderIdFlow.collect { folderId ->
+                val changed = _uiState.value.selectedFolderId != folderId
                 _uiState.value = _uiState.value.copy(selectedFolderId = folderId)
+                if (changed && initialLoadDone) {
+                    _uiState.value = _uiState.value.copy(isLoading = true)
+                    withContext(Dispatchers.IO) { cacheManager.clearHomeCache() }
+                    loadData(isRefresh = true)
+                }
+            }
+        }
+        viewModelScope.launch {
+            prefs.librarySwitcherModeFlow.collect { mode ->
+                _uiState.value = _uiState.value.copy(librarySwitcherMode = mode)
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -187,11 +215,10 @@ class HomeViewModel @Inject constructor(
     fun toggleAlbumPin(albumId: String) { viewModelScope.launch { pinnedRepository.toggleAlbumPin(albumId) } }
 
     fun selectMusicFolder(folderId: Int?) {
+        // Только сохраняем выбор: состояние и перезагрузку (в т.ч. для «Медиатеки») делает
+        // подписчик selectedMusicFolderIdFlow выше — так нет двойной загрузки.
         viewModelScope.launch {
             repository.setSelectedMusicFolderId(folderId)
-            _uiState.value = _uiState.value.copy(selectedFolderId = folderId, isLoading = true)
-            withContext(Dispatchers.IO) { cacheManager.clearHomeCache() }
-            loadData(isRefresh = true)
         }
     }
 
@@ -200,6 +227,9 @@ class HomeViewModel @Inject constructor(
             loadData(isRefresh = true)
         }
     }
+
+    /** true после первой загрузки: защищает от лишней перезагрузки на первом излучении flow при старте. */
+    private var initialLoadDone = false
 
     private suspend fun loadData(fromCache: Boolean = false, isRefresh: Boolean = false) {
         val report = PerformanceTracer.lastHomeReport ?: PerformanceTracer.newHomeReport()
@@ -416,6 +446,7 @@ class HomeViewModel @Inject constructor(
                 }
             }
         }
+        initialLoadDone = true
     }
 
     private fun CachedHomeData.toUiState(isLoading: Boolean, isFromCache: Boolean, pinnedIds: Set<String>, pinnedAlbumIds: Set<String>): HomeUiState {
