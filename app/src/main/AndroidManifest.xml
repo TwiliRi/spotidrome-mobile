@@ -25,10 +25,19 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="Spotidrome"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.SonicSpot">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Ссылки Navidrome (…/app/#/playlist|artist|album/…) открываются в приложении -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:pathPrefix="/app/" />
+                <data android:scheme="http" android:pathPrefix="/app/" />
             </intent-filter>
         </activity>
 

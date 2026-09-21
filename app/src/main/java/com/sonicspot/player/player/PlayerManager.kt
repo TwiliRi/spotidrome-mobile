@@ -58,7 +58,8 @@ class PlayerManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: MusicRepository,
     private val prefs: PreferencesManager,
-    private val playbackEngine: PlaybackEngine
+    private val playbackEngine: PlaybackEngine,
+    private val downloadStore: com.sonicspot.player.data.local.DownloadStore
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -91,6 +92,10 @@ class PlayerManager @Inject constructor(
     private val originalQueue = mutableListOf<Song>()
     private var dislikedIds: Set<String> = emptySet()
     private var skipDislikedEnabled: Boolean = true
+
+    // Страховка от лавины автоскипов: если в очереди подряд идут дубли одного
+    // непонравившегося трека, цепочка seekToNext могла не кончаться (вплоть до вылета).
+    private var consecutiveDislikedSkips = 0
 
     // Crossfade
     private var crossfadePlayer: ExoPlayer? = null
@@ -713,11 +718,20 @@ class PlayerManager @Inject constructor(
                             if (index >= 0 && index < _playerState.value.queue.size) {
                                 val nextSong = _playerState.value.queue.getOrNull(index)
                                 if (skipDislikedEnabled && nextSong != null && dislikedIds.contains(nextSong.id)) {
-                                    scope.launch {
-                                        delay(100)
-                                        try { seekToNextMediaItem() } catch (_: Exception) {}
+                                    consecutiveDislikedSkips++
+                                    if (consecutiveDislikedSkips <= _playerState.value.queue.size) {
+                                        scope.launch {
+                                            delay(100)
+                                            try { seekToNextMediaItem() } catch (_: Exception) {}
+                                        }
+                                    } else {
+                                        // Слишком длинная цепочка скипов (дубли в очереди) —
+                                        // прекращаем лавину и просто фиксируем позицию.
+                                        consecutiveDislikedSkips = 0
+                                        _playerState.update { it.copy(currentSong = nextSong, currentIndex = index, currentPosition = 0L, progress = 0f) }
                                     }
                                 } else {
+                                    consecutiveDislikedSkips = 0
                                     _playerState.update { it.copy(currentSong = nextSong, currentIndex = index, currentPosition = 0L, progress = 0f) }
                                     saveQueueToServerDebounced(position = 0L, immediate = false)
                                     checkAutoDjQueue(nextSong)
@@ -1044,7 +1058,13 @@ class PlayerManager @Inject constructor(
     }
 
     private fun createMediaItem(song: Song): MediaItem {
-        val streamUrl = repository.getStreamUrl(song.id)
+        // Скачанный трек играем из локального файла — без сети и без трафика.
+        val localFile = downloadStore.getLocalFile(song.id)
+        val streamUrl = if (localFile != null) {
+            android.net.Uri.fromFile(localFile).toString()
+        } else {
+            repository.getStreamUrl(song.id)
+        }
         if (streamUrl.isBlank()) {
             // Пустой URL = кэш учётных данных ещё не прогрет (холодный старт). Греем его прямо
             // сейчас: иначе ExoPlayer получил бы пустой Uri и молча «вечно грузил».

@@ -3,6 +3,7 @@ package com.sonicspot.player.ui.screens.playlist
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicspot.player.data.local.DownloadStore
 import com.sonicspot.player.data.model.PlaylistDetail
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
@@ -37,8 +38,12 @@ class PlaylistDetailViewModel @Inject constructor(
     val playerManager: PlayerManager,
     private val dislikedRepository: DislikedRepository,
     private val pinnedRepository: PinnedRepository,
-    private val starredRepository: StarredRepository
+    private val starredRepository: StarredRepository,
+    private val downloadStore: DownloadStore
 ) : ViewModel() {
+
+    val downloadedMap = downloadStore.downloaded
+    val downloadingIds = downloadStore.inProgress
 
     private val _uiState = MutableStateFlow(PlaylistDetailUiState())
     val uiState: StateFlow<PlaylistDetailUiState> = _uiState.asStateFlow()
@@ -101,5 +106,48 @@ class PlaylistDetailViewModel @Inject constructor(
     fun togglePin() {
         val id = _uiState.value.playlist?.id ?: return
         viewModelScope.launch { pinnedRepository.togglePin(id) }
+    }
+
+    /** Имя плейлиста + ссылка на него в Navidrome (копируется кнопкой «Поделиться»). */
+    fun shareText(): String {
+        val pl = _uiState.value.playlist ?: return ""
+        val url = repository.getPlaylistShareUrl(pl.id) ?: return pl.name
+        return "${pl.name}\n$url"
+    }
+
+    /** Скачивает все треки плейлиста (уже скачанные пропускаются — идемпотентно). */
+    fun downloadAll() {
+        val songs = _uiState.value.playlist?.entry ?: return
+        viewModelScope.launch {
+            songs.forEach { song ->
+                try { downloadStore.download(song) } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /** Удаляет скачанное этого плейлиста — файлы стираются, память освобождается. */
+    fun removeDownloads() {
+        val songs = _uiState.value.playlist?.entry ?: return
+        viewModelScope.launch {
+            songs.forEach { song ->
+                try { downloadStore.delete(song.id) } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun renamePlaylist(newName: String) {
+        val id = _uiState.value.playlist?.id ?: return
+        viewModelScope.launch {
+            try { repository.renamePlaylist(id, newName) } catch (_: Exception) {}
+            _uiState.value = _uiState.value.copy(playlist = _uiState.value.playlist?.copy(name = newName))
+        }
+    }
+
+    fun deletePlaylist(onDeleted: () -> Unit) {
+        val id = _uiState.value.playlist?.id ?: return
+        viewModelScope.launch {
+            repository.deletePlaylist(id)
+            onDeleted()
+        }
     }
 }

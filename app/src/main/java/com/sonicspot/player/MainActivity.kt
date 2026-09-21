@@ -3,6 +3,7 @@ package com.sonicspot.player
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import android.content.Intent
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,7 @@ import com.sonicspot.player.player.PlayerManager
 import com.sonicspot.player.ui.components.MiniPlayerModern
 import com.sonicspot.player.ui.components.SpotifyBottomNavModern
 import com.sonicspot.player.ui.navigation.AppNavGraph
+import com.sonicspot.player.ui.navigation.DeepLinks
 import com.sonicspot.player.ui.navigation.Screen
 import com.sonicspot.player.ui.screens.player.FullPlayerScreen
 import com.sonicspot.player.ui.theme.Background
@@ -39,8 +41,17 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var playerManager: PlayerManager
     @Inject lateinit var repository: MusicRepository
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        DeepLinks.handleIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Открытие ссылки Navidrome (например, https://server/app/#/playlist/123/show)
+        DeepLinks.handleIntent(intent)
 
         setContent {
             SonicSpotTheme {

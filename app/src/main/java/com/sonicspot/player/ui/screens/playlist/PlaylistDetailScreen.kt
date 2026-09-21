@@ -39,6 +39,12 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
     val currentSongId by viewModel.playerManager.currentSongFlow.collectAsState()
     val likedIds by viewModel.likedIds.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
+    val downloadedMap by viewModel.downloadedMap.collectAsState()
+    val downloadingIds by viewModel.downloadingIds.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showMoreDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeletePlaylistDialog by remember { mutableStateOf(false) }
     val gradient = remember { Brush.verticalGradient(colors = listOf(Color(0xFF5A5A5A), Color(0xFF2A2A2A), SpotifyColors.Black), startY = 0f, endY = 900f) }
     val listState = rememberLazyListState()
     var songToRemove by remember { mutableStateOf<Song?>(null) }
@@ -106,7 +112,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                                     Icon(if (state.isPinned) Icons.Default.PushPin else Icons.Filled.PushPin, null, tint = if (state.isPinned) SpotifyColors.Black else SpotifyColors.White, modifier = Modifier.size(20.dp))
                                 }
                                 Box(
-                                    modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.4f)).clickable { },
+                                    modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.4f)).clickable { showMoreDialog = true },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(Icons.Default.MoreVert, null, tint = SpotifyColors.White, modifier = Modifier.size(20.dp))
@@ -172,14 +178,28 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                                Box(modifier = Modifier.size(28.dp).clickable { }, contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.DownloadForOffline, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(24.dp))
+                                val downloadedInPlaylist = playlist.entry.count { downloadedMap.containsKey(it.id) }
+                                val allDownloaded = playlist.entry.isNotEmpty() && downloadedInPlaylist == playlist.entry.size
+                                Box(modifier = Modifier.size(28.dp).clickable { viewModel.downloadAll() }, contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        if (allDownloaded) Icons.Default.DownloadDone else Icons.Default.DownloadForOffline,
+                                        if (allDownloaded) "Всё скачано" else "Скачать треки",
+                                        tint = if (allDownloaded || downloadingIds.isNotEmpty()) SpotifyColors.Green else SpotifyColors.LightGray,
+                                        modifier = Modifier.size(24.dp)
+                                    )
                                 }
-                                Box(modifier = Modifier.size(28.dp).clickable { }, contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Share, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(20.dp))
+                                Box(modifier = Modifier.size(28.dp).clickable {
+                                    val text = viewModel.shareText()
+                                    if (text.isNotEmpty()) {
+                                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Плейлист", text))
+                                        android.widget.Toast.makeText(context, "Ссылка скопирована", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }, contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Share, "Поделиться", tint = SpotifyColors.LightGray, modifier = Modifier.size(20.dp))
                                 }
-                                Box(modifier = Modifier.size(28.dp).clickable { }, contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.MoreHoriz, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(22.dp))
+                                Box(modifier = Modifier.size(28.dp).clickable { showMoreDialog = true }, contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.MoreHoriz, "Ещё", tint = SpotifyColors.LightGray, modifier = Modifier.size(22.dp))
                                 }
                             }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -274,6 +294,109 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                 coverUrl = viewModel.getCoverUrl(songToRemove?.coverArt, 176),
                 onDismiss = { songToRemove = null },
                 onRemove = { viewModel.toggleLike(songToRemove?.id ?: "") }
+            )
+        }
+
+        if (showMoreDialog) {
+            AlertDialog(
+                onDismissRequest = { showMoreDialog = false },
+                containerColor = SpotifyColors.Gray,
+                title = { Text("Действия", color = SpotifyColors.White) },
+                text = {
+                    Column {
+                        TextButton(
+                            onClick = { showMoreDialog = false; showRenameDialog = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.Edit, null, tint = SpotifyColors.White, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text("Переименовать", color = SpotifyColors.White)
+                            }
+                        }
+                        val downloadedInMenu = playlist.entry.count { downloadedMap.containsKey(it.id) }
+                        if (downloadedInMenu > 0) {
+                            TextButton(
+                                onClick = { showMoreDialog = false; viewModel.removeDownloads() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Icon(Icons.Default.DeleteSweep, null, tint = SpotifyColors.White, modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Text("Удалить скачанное ($downloadedInMenu)", color = SpotifyColors.White)
+                                }
+                            }
+                        }
+                        if (!isExcludedPlaylist) {
+                            TextButton(
+                                onClick = { showMoreDialog = false; showDeletePlaylistDialog = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Icon(Icons.Default.Delete, null, tint = SpotifyColors.Red, modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Text("Удалить плейлист", color = SpotifyColors.Red)
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showMoreDialog = false }) { Text("Закрыть", color = SpotifyColors.LightGray) }
+                }
+            )
+        }
+
+        if (showRenameDialog) {
+            var newName by remember { mutableStateOf(playlist.name) }
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                containerColor = SpotifyColors.Gray,
+                title = { Text("Переименовать", color = SpotifyColors.White) },
+                text = {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("Название") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = newName.isNotBlank(),
+                        onClick = {
+                            viewModel.renamePlaylist(newName.trim())
+                            showRenameDialog = false
+                        }
+                    ) { Text("Сохранить", color = SpotifyColors.Green) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) { Text("Отмена", color = SpotifyColors.LightGray) }
+                }
+            )
+        }
+
+        if (showDeletePlaylistDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeletePlaylistDialog = false },
+                containerColor = SpotifyColors.Gray,
+                title = { Text("Удалить плейлист?", color = SpotifyColors.White) },
+                text = {
+                    Text(
+                        "«${playlist.name}» будет удалён с сервера. Скачанные треки останутся в разделе «Скачанные».",
+                        color = SpotifyColors.LightGray
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDeletePlaylistDialog = false
+                        viewModel.deletePlaylist { onBack() }
+                    }) { Text("Удалить", color = SpotifyColors.Red) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeletePlaylistDialog = false }) { Text("Отмена", color = SpotifyColors.LightGray) }
+                }
             )
         }
     }

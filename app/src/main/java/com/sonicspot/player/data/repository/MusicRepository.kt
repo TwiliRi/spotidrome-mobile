@@ -73,6 +73,20 @@ class MusicRepository @Inject constructor(
         return "$base/app/#/album/$albumId/show"
     }
 
+    fun getPlaylistShareUrl(playlistId: String): String? {
+        val base = cachedCredentials?.serverUrl ?: return null
+        return "$base/app/#/playlist/$playlistId/show"
+    }
+
+    suspend fun renamePlaylist(playlistId: String, newName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            api.updatePlaylist(playlistId = playlistId, name = newName)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun getSongShareUrl(songId: String): String? {
         val base = cachedCredentials?.serverUrl ?: return null
         return "$base/app/#/song/$songId/show"
@@ -323,11 +337,16 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    suspend fun createPlaylist(name: String): Result<Playlist> = withContext(Dispatchers.IO) {
+    suspend fun createPlaylist(name: String, isPublic: Boolean = false): Result<Playlist> = withContext(Dispatchers.IO) {
         try {
-            val res = api.createPlaylist(name)
+            val res = api.createPlaylist(name, public = isPublic)
             res.subsonicResponse.playlist?.let {
-                Result.success(Playlist(id = it.id, name = it.name, songCount = it.songCount, duration = it.duration))
+                // Страховка видимости: дублируем public через updatePlaylist — переживает
+                // серверы, которые проигнорировали бы public в createPlaylist.
+                if (isPublic) {
+                    try { api.updatePlaylist(playlistId = it.id, public = true) } catch (_: Exception) {}
+                }
+                Result.success(Playlist(id = it.id, name = it.name, songCount = it.songCount, duration = it.duration, public = isPublic))
             } ?: run {
                 val playlists = api.getPlaylists().subsonicResponse.playlists?.playlist ?: emptyList()
                 playlists.find { it.name == name }?.let { Result.success(it) } ?: Result.failure(Exception("Failed to create playlist"))

@@ -54,7 +54,8 @@ interface NavidromeApi {
 
     @GET("rest/createPlaylist.view")
     suspend fun createPlaylist(
-        @Query("name") name: String
+        @Query("name") name: String,
+        @Query("public") public: Boolean? = null
     ): SubsonicResponse
 
     @GET("rest/updatePlaylist.view")

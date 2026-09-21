@@ -139,6 +139,10 @@ class PlayerViewModel @Inject constructor(
         )
     }
 
+    /** Ссылка на страницу исполнителя в веб-морде Navidrome (или null, если сервер не задан). */
+    fun getArtistShareUrl(artistId: String?): String? =
+        artistId?.let { repository.getArtistShareUrl(it) }
+
     fun getCoverUrl(id: String?, size: Int = 500) = repository.getCoverArtUrl(id, size)
 
     fun togglePlayPause() = playerManager.togglePlayPause()

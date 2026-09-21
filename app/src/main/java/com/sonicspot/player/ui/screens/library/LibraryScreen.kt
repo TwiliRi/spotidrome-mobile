@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Playlist
+import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.*
 import com.sonicspot.player.ui.components.SpotifyPullToRefreshBox
 import com.sonicspot.player.ui.theme.*
@@ -39,9 +41,12 @@ fun LibraryScreen(
     onArtistClick: (String) -> Unit,
     onPlaylistClick: (String) -> Unit = {},
     onFavoritesClick: () -> Unit = {},
+    onDownloadsClick: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val searchState by viewModel.searchState.collectAsState()
+    val downloadedCount by viewModel.downloadedCount.collectAsState()
     // Геттеры LibraryUiState (pinnedPlaylists и пр.) фильтруют весь список на КАЖДОЕ
     // обращение. Мемоизируем: пересчёт только при реальном изменении данных.
     val pinnedPlaylists = remember(state.playlists, state.pinnedIds) { state.pinnedPlaylists }
@@ -57,12 +62,23 @@ fun LibraryScreen(
     var showAlbumSheet by remember { mutableStateOf(false) }
     var showPlaylistSheet by remember { mutableStateOf(false) }
     var showFolderSheet by remember { mutableStateOf(false) }
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
 
     SpotifyPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = { viewModel.refresh() },
         modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)
     ) {
+        if (searchState.isActive) {
+            LibrarySearchPanel(
+                searchState = searchState,
+                onQueryChange = { viewModel.onSearchQueryChange(it) },
+                onClose = { viewModel.setSearchActive(false) },
+                onAlbumClick = onAlbumClick,
+                onPlaySong = { songs, idx -> viewModel.playSongs(songs, idx) },
+                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 112) }
+            )
+        } else {
         Column(modifier = Modifier.fillMaxSize()) {
             // Верхняя панель без надписи "Моя медиатека" - только чипы и управление
             Row(
@@ -80,8 +96,14 @@ fun LibraryScreen(
                     Spacer(Modifier.width(1.dp))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Search, null, tint = SpotifyColors.White, modifier = Modifier.size(24.dp))
-                    Icon(Icons.Default.Add, null, tint = SpotifyColors.White, modifier = Modifier.size(26.dp))
+                    Icon(
+                        Icons.Default.Search, "Поиск по медиатеке", tint = SpotifyColors.White,
+                        modifier = Modifier.size(24.dp).clickable { viewModel.setSearchActive(true) }
+                    )
+                    Icon(
+                        Icons.Default.Add, "Создать плейлист", tint = SpotifyColors.White,
+                        modifier = Modifier.size(26.dp).clickable { showCreatePlaylistDialog = true }
+                    )
                 }
             }
 
@@ -149,6 +171,19 @@ fun LibraryScreen(
                                 }
                             }
                         }
+                        item {
+                            Column(modifier = Modifier.width(168.dp).clickable { onDownloadsClick() }) {
+                                Box(
+                                    modifier = Modifier.size(168.dp).clip(RoundedCornerShape(8.dp)).background(
+                                        Brush.linearGradient(colors = listOf(Color(0xFF0E6E5A), Color(0xFF2A2A2A)))
+                                    ),
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(Icons.Default.DownloadForOffline, null, tint = SpotifyColors.White, modifier = Modifier.size(48.dp)) }
+                                Spacer(Modifier.height(8.dp))
+                                Text("Скачанные", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = SpotifyColors.White, maxLines = 1)
+                                Text("Системный • $downloadedCount", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
+                            }
+                        }
                         items(pinnedPlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
                                 playlist = pl,
@@ -196,7 +231,7 @@ fun LibraryScreen(
                             }
                         }
 
-                        if (state.starredSongs.isNotEmpty() || excludedPlaylist != null) {
+                        if (state.starredSongs.isNotEmpty() || excludedPlaylist != null || downloadedCount >= 0) {
                             item { SectionHeaderSmall(title = "Системные") }
 
                             if (state.starredSongs.isNotEmpty()) {
@@ -225,6 +260,17 @@ fun LibraryScreen(
                                         onLongClick = { viewModel.cleanupDuplicates() }
                                     )
                                 }
+                            }
+
+                            item {
+                                SystemPlaylistRow(
+                                    title = "Скачанные",
+                                    subtitle = "Системный • $downloadedCount треков • офлайн, в памяти устройства",
+                                    count = downloadedCount,
+                                    icon = Icons.Default.DownloadForOffline,
+                                    gradient = Brush.linearGradient(colors = listOf(Color(0xFF0E6E5A), Color(0xFF2A2A2A))),
+                                    onClick = { onDownloadsClick() }
+                                )
                             }
                         }
 
@@ -331,6 +377,7 @@ fun LibraryScreen(
             }
         }
         }
+        } // конец режима библиотеки (else от searchState.isActive)
     }
 
     if (showAlbumSheet) {
@@ -365,6 +412,72 @@ fun LibraryScreen(
             selectedFolderId = state.selectedFolderId,
             onDismiss = { showFolderSheet = false },
             onSelect = { folderId -> viewModel.selectMusicFolder(folderId) }
+        )
+    }
+
+    if (showCreatePlaylistDialog) {
+        var newName by remember { mutableStateOf("") }
+        var newIsPublic by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            containerColor = SpotifyColors.Gray,
+            title = { Text("Новый плейлист", color = SpotifyColors.White) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("Название") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { newIsPublic = !newIsPublic },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Switch(
+                            checked = newIsPublic,
+                            onCheckedChange = { newIsPublic = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = SpotifyColors.White,
+                                checkedTrackColor = SpotifyColors.Green,
+                                uncheckedThumbColor = SpotifyColors.LightGray,
+                                uncheckedTrackColor = SpotifyColors.GrayLighter
+                            )
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                "Публичный",
+                                color = SpotifyColors.White,
+                                style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                if (newIsPublic) "Виден другим пользователям сервера" else "Личный — видите только вы",
+                                color = SpotifyColors.LightGray,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = newName.isNotBlank(),
+                    onClick = {
+                        val name = newName.trim()
+                        val isPublic = newIsPublic
+                        showCreatePlaylistDialog = false
+                        viewModel.createPlaylist(name, isPublic) { created ->
+                            if (created != null) onPlaylistClick(created.id)
+                        }
+                    }
+                ) { Text("Создать", color = SpotifyColors.Green, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) { Text("Отмена", color = SpotifyColors.LightGray) }
+            }
         )
     }
 }
@@ -405,5 +518,99 @@ private fun AlbumRowWithMenu(album: com.sonicspot.player.data.model.Album, cover
             androidx.compose.material3.Text("Альбом • " + (album.artist ?: ""), style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray, maxLines = 1)
         }
         androidx.compose.material3.Icon(Icons.Default.MoreVert, null, tint = SpotifyColors.MediumGray, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun LibrarySearchPanel(
+    searchState: LibrarySearchState,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit,
+    onAlbumClick: (String) -> Unit,
+    onPlaySong: (List<Song>, Int) -> Unit,
+    coverUrlProvider: (String?) -> String?
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = searchState.query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Трек или альбом", color = SpotifyColors.LightGray) },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = SpotifyColors.LightGray) },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+            TextButton(onClick = onClose) { Text("Отмена", color = SpotifyColors.White) }
+        }
+
+        when {
+            searchState.isSearching -> {
+                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = SpotifyColors.Green, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                }
+            }
+            searchState.query.isBlank() -> {
+                Text(
+                    "Ищите треки и альбомы своей медиатеки",
+                    color = SpotifyColors.LightGray,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(24.dp)
+                )
+            }
+            searchState.songs.isEmpty() && searchState.albums.isEmpty() -> {
+                Text(
+                    "Ничего не найдено",
+                    color = SpotifyColors.LightGray,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(24.dp)
+                )
+            }
+            else -> {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+                    if (searchState.songs.isNotEmpty()) {
+                        item { SectionHeaderSmall("Треки") }
+                        itemsIndexed(searchState.songs, key = { idx, s -> "song_${s.id}_$idx" }) { idx, song ->
+                            SearchRow(
+                                title = song.title,
+                                subtitle = listOfNotNull(song.artist, song.album).joinToString(" • "),
+                                coverUrl = coverUrlProvider(song.coverArt),
+                                onClick = { onPlaySong(searchState.songs, idx) }
+                            )
+                        }
+                    }
+                    if (searchState.albums.isNotEmpty()) {
+                        item { SectionHeaderSmall("Альбомы") }
+                        items(searchState.albums, key = { "album_${it.id}" }) { album ->
+                            SearchRow(
+                                title = album.name,
+                                subtitle = "Альбом • " + (album.artist ?: ""),
+                                coverUrl = coverUrlProvider(album.coverArt),
+                                onClick = { onAlbumClick(album.id) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchRow(title: String, subtitle: String, coverUrl: String?, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CoverArtImage(url = coverUrl, modifier = Modifier.size(48.dp), cornerRadius = 4.dp, sizePx = 96)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = SpotifyColors.White, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp), maxLines = 1)
+            Text(subtitle, color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), maxLines = 1)
+        }
     }
 }

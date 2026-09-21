@@ -3,6 +3,9 @@ package com.sonicspot.player.ui.navigation
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -10,6 +13,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.sonicspot.player.ui.screens.album.AlbumDetailScreen
 import com.sonicspot.player.ui.screens.artist.ArtistDetailScreen
+import com.sonicspot.player.ui.screens.downloads.DownloadedScreen
 import com.sonicspot.player.ui.screens.favorites.FavoritesScreen
 import com.sonicspot.player.ui.screens.home.HomeScreen
 import com.sonicspot.player.ui.screens.library.LibraryScreen
@@ -29,6 +33,7 @@ sealed class Screen(val route: String) {
     object Settings : Screen("settings")
     object Memory : Screen("memory")
     object Favorites : Screen("favorites")
+    object Downloads : Screen("downloads")
     object Queue : Screen("queue")
     object RecentlyAdded : Screen("recently_added")
     object AlbumDetail : Screen("album/{albumId}") {
@@ -52,6 +57,14 @@ fun AppNavGraph(
     // Плавные переходы как в Spotify
     val slideDuration = 300
     val fadeDuration = 200
+
+    // Ссылка Navidrome открыла приложение — переходим на нужный экран
+    val pendingRoute by DeepLinks.pendingRoute.collectAsState()
+    LaunchedEffect(pendingRoute) {
+        val route = pendingRoute ?: return@LaunchedEffect
+        DeepLinks.consume()
+        navController.navigate(route)
+    }
 
     NavHost(
         navController = navController,
@@ -137,7 +150,8 @@ fun AppNavGraph(
                 onAlbumClick = { id -> navController.navigate(Screen.AlbumDetail.createRoute(id)) },
                 onArtistClick = { id -> navController.navigate(Screen.ArtistDetail.createRoute(id)) },
                 onPlaylistClick = { id -> navController.navigate(Screen.PlaylistDetail.createRoute(id)) },
-                onFavoritesClick = { navController.navigate(Screen.Favorites.route) }
+                onFavoritesClick = { navController.navigate(Screen.Favorites.route) },
+                onDownloadsClick = { navController.navigate(Screen.Downloads.route) }
             )
         }
 
@@ -190,6 +204,18 @@ fun AppNavGraph(
             }
         ) {
             FavoritesScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            Screen.Downloads.route,
+            enterTransition = {
+                slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeIn(tween(fadeDuration))
+            },
+            popExitTransition = {
+                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeOut(tween(fadeDuration))
+            }
+        ) {
+            DownloadedScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

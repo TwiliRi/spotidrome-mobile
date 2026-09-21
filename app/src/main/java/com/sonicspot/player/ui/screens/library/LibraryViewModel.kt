@@ -3,6 +3,7 @@ package com.sonicspot.player.ui.screens.library
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicspot.player.data.local.DownloadStore
 import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Artist
@@ -15,12 +16,15 @@ import com.sonicspot.player.data.repository.PinnedRepository
 import com.sonicspot.player.data.repository.StarredRepository
 import com.sonicspot.player.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -62,6 +66,15 @@ data class LibraryUiState(
     val selectedFolderName: String? get() = musicFolders.find { it.id == selectedFolderId }?.name
 }
 
+@Immutable
+data class LibrarySearchState(
+    val isActive: Boolean = false,
+    val query: String = "",
+    val isSearching: Boolean = false,
+    val songs: List<Song> = emptyList(),
+    val albums: List<Album> = emptyList()
+)
+
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val repository: MusicRepository,
@@ -69,7 +82,8 @@ class LibraryViewModel @Inject constructor(
     private val dislikedRepository: DislikedRepository,
     private val pinnedRepository: PinnedRepository,
     private val starredRepository: StarredRepository,
-    private val prefs: PreferencesManager
+    private val prefs: PreferencesManager,
+    private val downloadStore: DownloadStore
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(LibraryUiState())
     val uiState: StateFlow<LibraryUiState> = _uiState.asStateFlow()
@@ -77,6 +91,7 @@ class LibraryViewModel @Inject constructor(
     val likedIds = starredRepository.likedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val pinnedIds = pinnedRepository.pinnedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val pinnedAlbumIds = pinnedRepository.pinnedAlbumsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    val downloadedCount = downloadStore.downloaded.map { it.size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     init {
         viewModelScope.launch { load() }
@@ -237,6 +252,45 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun getCoverUrl(id: String?, size: Int = 300) = repository.getCoverArtUrl(id, size)
+
+    // ---------- Поиск треков и альбомов по медиатеке ----------
+    private val _searchState = MutableStateFlow(LibrarySearchState())
+    val searchState: StateFlow<LibrarySearchState> = _searchState.asStateFlow()
+    private var searchJob: Job? = null
+
+    fun setSearchActive(active: Boolean) {
+        _searchState.value = if (active) _searchState.value.copy(isActive = true) else LibrarySearchState()
+    }
+
+    fun onSearchQueryChange(query: String) {
+        _searchState.value = _searchState.value.copy(query = query)
+        searchJob?.cancel()
+        val q = query.trim()
+        if (q.isEmpty()) {
+            _searchState.value = _searchState.value.copy(isSearching = false, songs = emptyList(), albums = emptyList())
+            return
+        }
+        searchJob = viewModelScope.launch {
+            _searchState.value = _searchState.value.copy(isSearching = true)
+            delay(350) // дебаунс — не долбить сервер на каждую букву
+            val result = repository.search(q, forceRefresh = true)
+            val found = result.getOrNull()
+            _searchState.value = _searchState.value.copy(
+                isSearching = false,
+                songs = found?.song ?: emptyList(),
+                albums = found?.album ?: emptyList()
+            )
+        }
+    }
+
+    /** Создание плейлиста: isPublic=false — личный, true — публичный. */
+    fun createPlaylist(name: String, isPublic: Boolean, onDone: (Playlist?) -> Unit = {}) {
+        viewModelScope.launch {
+            val created = repository.createPlaylist(name, isPublic).getOrNull()
+            try { load(isRefresh = true) } catch (_: Exception) {}
+            onDone(created)
+        }
+    }
     fun playSongs(songs: List<Song>, index: Int) = playerManager.playSongs(songs, index)
     fun playAlbum(albumId: String) {
         viewModelScope.launch {

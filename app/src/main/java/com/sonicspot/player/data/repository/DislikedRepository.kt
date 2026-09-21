@@ -23,6 +23,13 @@ class DislikedRepository @Inject constructor(
     val dislikedIdsFlow: Flow<Set<String>> = prefs.dislikedIdsFlow
     private val mutex = Mutex()
 
+    /**
+     * Сериализует toggle-нажатия (кнопка «Исключить» в шторке уведомлений).
+     * Без этого быстрые тапы запускали параллельные toggle, каждый видел
+     * «ещё не дизлайкнут» и все добавляли трек в плейлист — отсюда дубли.
+     */
+    private val toggleMutex = Mutex()
+
     suspend fun isDisliked(songId: String): Boolean = prefs.dislikedIdsFlow.first().contains(songId)
 
     // FIX: Batch write вместо loop - было 100 IO + 100 recompositions = лаг скролла
@@ -32,6 +39,9 @@ class DislikedRepository @Inject constructor(
             val playlistResult = getOrCreateExcludedPlaylist()
             val playlist = playlistResult.getOrNull() ?: return@withContext Result.success(0)
             val detail = musicRepository.getPlaylist(playlist.id).getOrNull() ?: return@withContext Result.success(0)
+            // АВТО-ЧИСТКА: если трек лежит в «Исключённых» несколько раз (наследие
+            // спам-тапов из шторки до фикса) — оставляем по одному вхождению.
+            dedupePlaylistEntries(playlist.id)
             val serverIds = detail.entry.map { it.id }.toSet()
             val localIds = prefs.dislikedIdsFlow.first()
             val missing = serverIds - localIds
@@ -64,6 +74,22 @@ class DislikedRepository @Inject constructor(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** Убирает повторные вхождения треков внутри плейлиста (оставляет по одному). */
+    private suspend fun dedupePlaylistEntries(playlistId: String) {
+        try {
+            val detail = musicRepository.getPlaylist(playlistId).getOrNull() ?: return
+            val seen = mutableSetOf<String>()
+            val duplicates = mutableListOf<Int>()
+            detail.entry.forEachIndexed { idx, s ->
+                if (!seen.add(s.id)) duplicates.add(idx)
+            }
+            // Индексами с конца — иначе после каждого удаления оставшиеся съезжают
+            duplicates.sortedDescending().forEach { idx ->
+                try { musicRepository.removeFromPlaylist(playlistId, idx) } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
     }
 
     suspend fun getOrCreateExcludedPlaylist(): Result<Playlist> = mutex.withLock {
@@ -142,12 +168,14 @@ class DislikedRepository @Inject constructor(
         }
     }
 
-    suspend fun toggleDislike(songId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val isCurrentlyDisliked = isDisliked(songId)
-            if (isCurrentlyDisliked) removeFromExcluded(songId) else addToExcluded(songId)
-        } catch (e: Exception) {
-            Result.failure(e)
+    suspend fun toggleDislike(songId: String): Result<Boolean> = toggleMutex.withLock {
+        withContext(Dispatchers.IO) {
+            try {
+                val isCurrentlyDisliked = isDisliked(songId)
+                if (isCurrentlyDisliked) removeFromExcluded(songId) else addToExcluded(songId)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
@@ -156,7 +184,12 @@ class DislikedRepository @Inject constructor(
             prefs.addDislikedId(songId)
             val playlistResult = getOrCreateExcludedPlaylist()
             val playlist = playlistResult.getOrNull() ?: return@withContext Result.success(true)
-            musicRepository.addToPlaylist(playlist.id, songId)
+            // ИДЕМПОТЕНТНОСТЬ: добавляем на сервер, только если трека там ещё нет.
+            // Иначе каждый повторный тап плодил дубль в плейлисте.
+            val detail = musicRepository.getPlaylist(playlist.id).getOrNull()
+            if (detail == null || detail.entry.none { it.id == songId }) {
+                musicRepository.addToPlaylist(playlist.id, songId)
+            }
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
@@ -168,8 +201,17 @@ class DislikedRepository @Inject constructor(
             prefs.removeDislikedId(songId)
             val playlistId = prefs.excludedPlaylistIdFlow.first() ?: getOrCreateExcludedPlaylist().getOrNull()?.id ?: return@withContext Result.success(false)
             val playlistDetail = musicRepository.getPlaylist(playlistId).getOrNull()
-            val index = playlistDetail?.entry?.indexOfFirst { it.id == songId } ?: -1
-            if (index >= 0) musicRepository.removeFromPlaylist(playlistId, index)
+            // Убираем ВСЕ копии трека (дубли от старых спам-тапов) — индексами с конца,
+            // чтобы после удаления оставшиеся индексы не съезжали.
+            val indices = playlistDetail?.entry
+                ?.withIndex()
+                ?.filter { it.value.id == songId }
+                ?.map { it.index }
+                ?.sortedDescending()
+                ?: emptyList()
+            indices.forEach { idx ->
+                try { musicRepository.removeFromPlaylist(playlistId, idx) } catch (_: Exception) {}
+            }
             Result.success(false)
         } catch (e: Exception) {
             Result.failure(e)
@@ -181,7 +223,11 @@ class DislikedRepository @Inject constructor(
             val all = musicRepository.getPlaylists().getOrNull() ?: return@withContext 0
             val matching = all.filter { it.name == EXCLUDED_PLAYLIST_NAME }
             if (matching.size <= 1) {
-                if (matching.size == 1) prefs.saveExcludedPlaylistId(matching.first().id)
+                if (matching.size == 1) {
+                    prefs.saveExcludedPlaylistId(matching.first().id)
+                    // Чистим и повторные вхождения треков внутри самого плейлиста
+                    dedupePlaylistEntries(matching.first().id)
+                }
                 return@withContext 0
             }
             val sorted = matching.sortedByDescending { it.songCount }
@@ -216,6 +262,8 @@ class DislikedRepository @Inject constructor(
                     deleted++
                 } catch (_: Exception) {}
             }
+            // После слияния дублей-плейлистов убираем и повторные вхождения внутри
+            dedupePlaylistEntries(keep.id)
             prefs.saveExcludedPlaylistId(keep.id)
             deleted
         } catch (e: Exception) {

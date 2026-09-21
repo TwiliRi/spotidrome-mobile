@@ -5,6 +5,9 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -18,10 +21,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -37,7 +44,9 @@ import com.sonicspot.player.ui.components.SleepTimerBottomSheet
 import com.sonicspot.player.ui.components.SleepTimerButton
 import com.sonicspot.player.ui.components.SleepTimerCompactIconButton
 import com.sonicspot.player.ui.theme.*
+import kotlin.math.abs
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,9 +150,12 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
 
             LazyColumn(state = mainListState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
                 item {
-                    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        AsyncImage(model = coverRequest, contentDescription = null, modifier = Modifier.fillMaxWidth(0.85f).aspectRatio(1f).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
-                    }
+                    SwipeableCover(
+                        model = coverRequest,
+                        onPrevious = { viewModel.playPrevious() },
+                        onNext = { viewModel.playNext() },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)
+                    )
                 }
                 item {
                     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -190,8 +202,44 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                             Icon(Icons.Default.Shuffle, null, tint = if (playerState.shuffleEnabled) SpotifyColors.Green else SpotifyColors.White, modifier = Modifier.size(22.dp))
                         }
                         IconButton(onClick = { viewModel.playPrevious() }, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.SkipPrevious, null, tint = SpotifyColors.White, modifier = Modifier.size(36.dp)) }
-                        IconButton(onClick = { viewModel.togglePlayPause() }, modifier = Modifier.size(64.dp).clip(CircleShape).background(SpotifyColors.White)) {
-                            Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = SpotifyColors.Black, modifier = Modifier.size(32.dp))
+                        val playInteractionSource = remember { MutableInteractionSource() }
+                        val isPlayPressed by playInteractionSource.collectIsPressedAsState()
+                        val playButtonScale by animateFloatAsState(
+                            targetValue = if (isPlayPressed) 0.86f else 1f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh),
+                            label = "playPress"
+                        )
+                        var playIconScale by remember { mutableFloatStateOf(1f) }
+                        var playIconFirstLaunch by remember { mutableStateOf(true) }
+                        LaunchedEffect(isPlaying) {
+                            if (playIconFirstLaunch) {
+                                playIconFirstLaunch = false
+                            } else {
+                                playIconScale = 0.5f
+                                animate(
+                                    initialValue = 0.5f,
+                                    targetValue = 1f,
+                                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+                                ) { value, _ -> playIconScale = value }
+                            }
+                        }
+                        IconButton(
+                            onClick = { viewModel.togglePlayPause() },
+                            interactionSource = playInteractionSource,
+                            modifier = Modifier
+                                .size(64.dp)
+                                .graphicsLayer { scaleX = playButtonScale; scaleY = playButtonScale }
+                                .clip(CircleShape)
+                                .background(SpotifyColors.White)
+                        ) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                null,
+                                tint = SpotifyColors.Black,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .graphicsLayer { scaleX = playIconScale; scaleY = playIconScale }
+                            )
                         }
                         IconButton(onClick = { viewModel.playNext() }, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.SkipNext, null, tint = SpotifyColors.White, modifier = Modifier.size(36.dp)) }
                         Box(modifier = Modifier.size(36.dp).clip(CircleShape).clickable { viewModel.toggleRepeat() }.background(if (playerState.repeatMode != 0) SpotifyColors.Green.copy(alpha = 0.2f) else Color.Transparent), contentAlignment = Alignment.Center) {
@@ -245,6 +293,7 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                         coverUrlProvider = { id -> viewModel.getCoverUrl(id, 128) },
                         onSongClick = { _, idx -> viewModel.playerManager.playSongs(artistInfo.topSongs, idx) },
                         onArtistRadio = { viewModel.startArtistRadio(song.artist ?: "") },
+                        artistShareUrl = viewModel.getArtistShareUrl(song.artistId ?: artistInfo.artistDetail?.id),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -828,16 +877,16 @@ private fun ArtistInfoSection(
     coverUrlProvider: (String?) -> String?,
     onSongClick: (com.sonicspot.player.data.model.Song, Int) -> Unit,
     onArtistRadio: () -> Unit,
+    artistShareUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     fun shareArtist() {
-        val sendIntent = android.content.Intent().apply {
-            action = android.content.Intent.ACTION_SEND
-            putExtra(android.content.Intent.EXTRA_TEXT, "Слушай $artistName на Spotidrome 🎵")
-            type = "text/plain"
-        }
-        context.startActivity(android.content.Intent.createChooser(sendIntent, null))
+        // Копируем в буфер обмена: имя автора + ссылка на его страницу в Navidrome. И всё.
+        val text = if (artistShareUrl.isNullOrBlank()) artistName else "$artistName\n$artistShareUrl"
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Исполнитель", text))
+        android.widget.Toast.makeText(context, "Ссылка скопирована", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     Column(modifier = modifier.padding(horizontal = 16.dp)) {
@@ -896,6 +945,113 @@ private fun ArtistInfoSection(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SwipeableCover(
+    model: Any?,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var coverWidthPx by remember { mutableFloatStateOf(1f) }
+    var animating by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        AsyncImage(
+            model = model,
+            contentDescription = "Обложка трека. Свайп влево — следующий трек, вправо — предыдущий",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .aspectRatio(1f)
+                .onSizeChanged { coverWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                .graphicsLayer {
+                    translationX = offsetX
+                    rotationZ = (offsetX / coverWidthPx) * 7f
+                    alpha = 1f - (abs(offsetX) / coverWidthPx).coerceIn(0f, 1f) * 0.4f
+                }
+                .pointerInput(Unit) {
+                    val velocityTracker = VelocityTracker()
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            if (!animating) velocityTracker.resetTracking()
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (!animating) {
+                                change.consume()
+                                velocityTracker.addPosition(change.uptimeMillis, change.position)
+                                offsetX += dragAmount
+                            }
+                        },
+                        onDragEnd = {
+                            if (animating) return@detectHorizontalDragGestures
+                            val velocityX = velocityTracker.calculateVelocity().x
+                            val distanceThreshold = coverWidthPx * 0.22f
+                            val flingThreshold = 1200f
+                            val goNext = offsetX <= -distanceThreshold || velocityX <= -flingThreshold
+                            val goPrevious = offsetX >= distanceThreshold || velocityX >= flingThreshold
+                            if (goNext || goPrevious) {
+                                animating = true
+                                scope.launch {
+                                    // Шаг 1: уводим обложку за край экрана
+                                    animate(
+                                        initialValue = offsetX,
+                                        targetValue = if (goNext) -coverWidthPx * 1.2f else coverWidthPx * 1.2f,
+                                        animationSpec = tween(durationMillis = 150, easing = FastOutLinearInEasing)
+                                    ) { value, _ -> offsetX = value }
+                                    // Шаг 2: переключаем трек
+                                    if (goNext) onNext() else onPrevious()
+                                    // Шаг 3: новая обложка «приезжает» с небольшим заходом с противоположной стороны
+                                    offsetX = if (goNext) coverWidthPx * 0.35f else -coverWidthPx * 0.35f
+                                    animate(
+                                        initialValue = offsetX,
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        )
+                                    ) { value, _ -> offsetX = value }
+                                    animating = false
+                                }
+                            } else {
+                                animating = true
+                                scope.launch {
+                                    animate(
+                                        initialValue = offsetX,
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    ) { value, _ -> offsetX = value }
+                                    animating = false
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            if (!animating) {
+                                animating = true
+                                scope.launch {
+                                    animate(
+                                        initialValue = offsetX,
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    ) { value, _ -> offsetX = value }
+                                    animating = false
+                                }
+                            }
+                        }
+                    )
+                }
+                .clip(RoundedCornerShape(8.dp))
+        )
     }
 }
 
