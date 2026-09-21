@@ -28,6 +28,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Playlist
 import com.sonicspot.player.ui.components.*
+import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
+import com.sonicspot.player.ui.random.RandomTrackButton
 import com.sonicspot.player.ui.theme.*
 import java.util.Calendar
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -40,6 +42,10 @@ fun HomeScreen(
     onPlaylistClick: (String) -> Unit = {},
     onSettingsClick: () -> Unit = {},
     onRecentlyAddedClick: () -> Unit = {},
+    /** Кнопка «случайный трек»: бросок с анимацией чёрной дыры. */
+    onRandomTrackClick: () -> Unit = {},
+    /** Бросок уже идёт — кубик крутится и не принимает повторные нажатия. */
+    randomBusy: Boolean = false,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -54,6 +60,9 @@ fun HomeScreen(
     var showPlaylistSheet by remember { mutableStateOf(false) }
     var showFolderSheet by remember { mutableStateOf(false) }
     var songToRemove by remember { mutableStateOf<com.sonicspot.player.data.model.Song?>(null) }
+    // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
+    val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
+    var songMenu by remember { mutableStateOf<com.sonicspot.player.data.model.Song?>(null) }
 
     BackHandler(enabled = showAlbumSheet || showPlaylistSheet) {
         if (showAlbumSheet) {
@@ -137,11 +146,15 @@ fun HomeScreen(
                                 LibraryChip(folderName = state.selectedFolderName, onClick = { showFolderSheet = true })
                             }
                         }
-                        Box(
-                            modifier = Modifier.size(40.dp).clip(CircleShape).background(SpotifyColors.Gray).clickable { onSettingsClick() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Settings, null, tint = SpotifyColors.White, modifier = Modifier.size(22.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            // Случайный трек — кубик рядом с настройками (в десктопе он в титульной панели)
+                            RandomTrackButton(isBusy = randomBusy, onClick = onRandomTrackClick)
+                            Box(
+                                modifier = Modifier.size(40.dp).clip(CircleShape).background(SpotifyColors.Gray).clickable { onSettingsClick() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Settings, null, tint = SpotifyColors.White, modifier = Modifier.size(22.dp))
+                            }
                         }
                     }
 
@@ -228,6 +241,7 @@ fun HomeScreen(
                             itemContent = { playlist ->
                                 val coverUrl = remember(playlist.coverArt) { viewModel.getCoverUrl(playlist.coverArt, 304) }
                                 PlaylistCardModernWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = playlist,
                                     coverUrl = coverUrl,
                                     isPinned = true,
@@ -252,6 +266,7 @@ fun HomeScreen(
                             itemContent = { playlist ->
                                 val coverUrl = remember(playlist.coverArt) { viewModel.getCoverUrl(playlist.coverArt, 304) }
                                 PlaylistCardModernWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = playlist,
                                     coverUrl = coverUrl,
                                     isPinned = false,
@@ -291,6 +306,7 @@ fun HomeScreen(
                             itemContent = { playlist ->
                                 val coverUrl = remember(playlist.coverArt) { viewModel.getCoverUrl(playlist.coverArt, 304) }
                                 PlaylistCardModernWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = playlist,
                                     coverUrl = coverUrl,
                                     isPinned = false,
@@ -366,7 +382,7 @@ fun HomeScreen(
                                     isDisliked = isDisliked,
                                     showCover = true,
                                     onClick = { viewModel.playSongs(state.randomSongs, idx) },
-                                    onMore = {},
+                                    onMore = { songMenu = song },
                                     onLike = {
                                         if (isLiked) songToRemove = song
                                         else viewModel.toggleLike(song.id)
@@ -463,7 +479,8 @@ fun HomeScreen(
                 onDismiss = { showPlaylistSheet = false; selectedPlaylistForMenu = null },
                 onPlay = { selectedPlaylistForMenu?.let { onPlaylistClick(it.id) } },
                 onShuffle = { },
-                onPinToggle = { selectedPlaylistForMenu?.let { viewModel.togglePin(it.id) } }
+                onPinToggle = { selectedPlaylistForMenu?.let { viewModel.togglePin(it.id) } },
+                currentUsername = state.currentUsername
             )
         }
 
@@ -484,5 +501,24 @@ fun HomeScreen(
                 onSelect = { folderId -> viewModel.selectMusicFolder(folderId) }
             )
         }
+
+        // Меню трека по «…»: добавление в плейлист, лайк, исключение
+        SongOptionsSheet(
+            song = songMenu,
+            coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
+            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
+            onDismiss = { songMenu = null },
+            onAddToPlaylist = {
+                val target = songMenu
+                songMenu = null
+                target?.let { addToPlaylistViewModel.open(it) }
+            },
+            onToggleLike = { songMenu?.let { viewModel.toggleLike(it.id) }; songMenu = null },
+            onToggleDislike = { songMenu?.let { viewModel.toggleDislike(it.id) }; songMenu = null },
+            shareUrl = null
+        )
+        // Сама шторка выбора плейлиста (не рисует ничего, пока трек не выбран)
+        AddToPlaylistHost(viewModel = addToPlaylistViewModel)
     }
 }

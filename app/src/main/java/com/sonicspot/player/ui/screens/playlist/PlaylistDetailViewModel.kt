@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.local.DownloadStore
+import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.data.model.PlaylistDetail
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -25,8 +27,18 @@ data class PlaylistDetailUiState(
     val playlist: PlaylistDetail? = null,
     val error: String? = null,
     val isPinned: Boolean = false,
-    val visibleCount: Int = 20
+    val visibleCount: Int = 20,
+    /** Ник текущего пользователя: запасной вариант, если сервер не отдал владельца плейлиста. */
+    val currentUsername: String = ""
 ) {
+    /**
+     * Автор плейлиста: владелец с сервера, иначе — текущий пользователь.
+     * Пустая строка означает «автора нет» — тогда подпись не показываем.
+     */
+    val ownerName: String get() = playlist?.owner?.takeIf { it.isNotBlank() }
+        ?: currentUsername.takeIf { it.isNotBlank() }
+        ?: ""
+
     val visibleSongs get() = playlist?.entry?.take(visibleCount) ?: emptyList()
     val hasMore: Boolean get() = (playlist?.entry?.size ?: 0) > visibleCount
     val remainingCount: Int get() = (playlist?.entry?.size ?: 0) - visibleCount
@@ -39,7 +51,8 @@ class PlaylistDetailViewModel @Inject constructor(
     private val dislikedRepository: DislikedRepository,
     private val pinnedRepository: PinnedRepository,
     private val starredRepository: StarredRepository,
-    private val downloadStore: DownloadStore
+    private val downloadStore: DownloadStore,
+    private val prefs: PreferencesManager
 ) : ViewModel() {
 
     val downloadedMap = downloadStore.downloaded
@@ -55,13 +68,28 @@ class PlaylistDetailViewModel @Inject constructor(
         const val PAGE_SIZE = 20
     }
 
-    fun loadPlaylist(id: String) {
+    init {
+        viewModelScope.launch {
+            try {
+                val creds = prefs.getCredentials().first()
+                _uiState.value = _uiState.value.copy(currentUsername = creds.username)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun loadPlaylist(id: String, forceRefresh: Boolean = false) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, visibleCount = PAGE_SIZE)
-            val result = repository.getPlaylist(id)
+            val result = repository.getPlaylist(id, forceRefresh = forceRefresh)
             result.onSuccess { pl ->
                 val isPinned = pinnedIds.value.contains(id)
-                _uiState.value = PlaylistDetailUiState(isLoading = false, playlist = pl, isPinned = isPinned, visibleCount = PAGE_SIZE)
+                _uiState.value = PlaylistDetailUiState(
+                    isLoading = false,
+                    playlist = pl,
+                    isPinned = isPinned,
+                    visibleCount = PAGE_SIZE,
+                    currentUsername = _uiState.value.currentUsername
+                )
                 // Если это плейлист исключенных - синхронизируем все его треки в локальный список исключенных
                 if (pl.name == DislikedRepository.EXCLUDED_PLAYLIST_NAME) {
                     try { dislikedRepository.syncFromServer() } catch (_: Exception) {}
@@ -103,6 +131,18 @@ class PlaylistDetailViewModel @Inject constructor(
     fun shufflePlay() { val songs = _uiState.value.playlist?.entry?.shuffled() ?: return; playerManager.playSongs(songs, 0) }
     fun toggleDislike(songId: String) { viewModelScope.launch { dislikedRepository.toggleDislike(songId) } }
     fun toggleLike(songId: String) { viewModelScope.launch { starredRepository.toggleLike(songId) } }
+    /** Убирает трек из этого плейлиста и перечитывает состав. */
+    fun removeSongFromPlaylist(songId: String) {
+        val id = _uiState.value.playlist?.id ?: return
+        viewModelScope.launch {
+            repository.removeSongFromPlaylist(id, songId)
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(error = error.message ?: "Не удалось убрать трек")
+                }
+            loadPlaylist(id, forceRefresh = true)
+        }
+    }
+
     fun togglePin() {
         val id = _uiState.value.playlist?.id ?: return
         viewModelScope.launch { pinnedRepository.togglePin(id) }

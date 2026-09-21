@@ -28,8 +28,11 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,11 +41,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.sonicspot.player.data.repository.LyricLine
+import com.sonicspot.player.ui.components.AddToPlaylistHost
 import com.sonicspot.player.ui.components.LibraryLabelUnderLyrics
+import com.sonicspot.player.ui.random.PlayerCoverBounds
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.SleepTimerBottomSheet
 import com.sonicspot.player.ui.components.SleepTimerButton
 import com.sonicspot.player.ui.components.SleepTimerCompactIconButton
+import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
 import com.sonicspot.player.ui.theme.*
 import kotlin.math.abs
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +73,8 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
     val libraryInfo by viewModel.libraryInfo.collectAsState()
     val sleepTimerState by viewModel.sleepTimerState.collectAsState()
 
+    // Шторка «Добавить в плейлист» — общая для всех экранов с треками
+    val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
     var showTrackOptions by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var showFullscreenLyrics by remember { mutableStateOf(false) }
@@ -165,6 +173,18 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                             Text(song.artist ?: "Unknown", style = MaterialTheme.typography.bodyMedium.copy(color = SpotifyColors.LightGray, fontSize = 15.sp), maxLines = 1)
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            // Добавление в плейлист — та же шторка выбора, что и в списках треков
+                            IconButton(
+                                onClick = { addToPlaylistViewModel.open(song) },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.PlaylistAdd,
+                                    "Добавить в плейлист",
+                                    tint = SpotifyColors.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                             IconButton(
                                 onClick = { viewModel.toggleDislike(song.id) },
                                 modifier = Modifier.size(40.dp)
@@ -331,6 +351,7 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                 isLiked = isLiked,
                 isDisliked = isDisliked,
                 onDismiss = { showTrackOptions = false },
+                onAddToPlaylist = { showTrackOptions = false; addToPlaylistViewModel.open(song) },
                 onAddToQueue = { viewModel.addToQueue(song); showTrackOptions = false },
                 onAddNext = { viewModel.addNext(song); showTrackOptions = false },
                 onGoToAlbum = { showTrackOptions = false },
@@ -350,6 +371,8 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                 onToggleDislike = { viewModel.toggleDislike(song.id); showTrackOptions = false }
             )
         }
+        // Шторка выбора плейлиста: не рисует ничего, пока трек не выбран
+        AddToPlaylistHost(viewModel = addToPlaylistViewModel)
         if (showQueueSheet) {
             QueueBottomSheet(currentSong = song, queue = queue, upcoming = upcoming, currentIndex = playerState.currentIndex, onDismiss = { showQueueSheet = false }, onPlayIndex = { idx -> viewModel.playQueueIndex(idx); showQueueSheet = false }, onRemoveIndex = { idx -> viewModel.removeFromQueue(idx) }, onClearQueue = { viewModel.clearQueue() }, onMove = { from, to -> viewModel.moveQueueItem(from, to) })
         }
@@ -956,6 +979,8 @@ private fun SwipeableCover(
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
+    // Радиус скругления цели для перелёта обложки — в пикселях, поэтому нужна плотность
+    val coverCornerPx = with(LocalDensity.current) { 8.dp.toPx() }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var coverWidthPx by remember { mutableFloatStateOf(1f) }
     var animating by remember { mutableStateOf(false) }
@@ -969,6 +994,10 @@ private fun SwipeableCover(
                 .fillMaxWidth(0.85f)
                 .aspectRatio(1f)
                 .onSizeChanged { coverWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                // «Финиш» перелёта обложки случайного трека: сцена чёрной дыры целится сюда
+                .onGloballyPositioned { coords ->
+                    PlayerCoverBounds.update(coords.boundsInWindow(), coverCornerPx)
+                }
                 .graphicsLayer {
                     translationX = offsetX
                     rotationZ = (offsetX / coverWidthPx) * 7f
@@ -1064,6 +1093,7 @@ private fun TrackOptionsBottomSheet(
     isLiked: Boolean,
     isDisliked: Boolean = false,
     onDismiss: () -> Unit,
+    onAddToPlaylist: () -> Unit,
     onAddToQueue: () -> Unit,
     onAddNext: () -> Unit,
     onGoToAlbum: () -> Unit,
@@ -1085,6 +1115,13 @@ private fun TrackOptionsBottomSheet(
                 }
             }
             HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.3f))
+            // Главное действие: тот же лист выбора плейлиста, что и в списках треков
+            BottomSheetItem(
+                icon = Icons.Default.PlaylistAdd,
+                title = "Добавить в плейлист",
+                subtitle = "Выбрать плейлист или создать новый",
+                onClick = onAddToPlaylist
+            )
             BottomSheetItem(icon = Icons.Default.QueueMusic, title = "Добавить в очередь", onClick = onAddToQueue)
             BottomSheetItem(icon = Icons.Default.SkipNext, title = "Играть следующим", onClick = onAddNext)
             HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.2f), modifier = Modifier.padding(vertical = 4.dp))

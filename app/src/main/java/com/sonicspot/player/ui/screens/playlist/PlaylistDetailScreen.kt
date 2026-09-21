@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -26,7 +27,10 @@ import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.CoverArtImage
 import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
+import com.sonicspot.player.ui.components.AddToPlaylistHost
+import com.sonicspot.player.ui.components.SongOptionsSheet
 import com.sonicspot.player.ui.components.SongRowModern
+import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
 import com.sonicspot.player.ui.theme.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -48,6 +52,14 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
     val gradient = remember { Brush.verticalGradient(colors = listOf(Color(0xFF5A5A5A), Color(0xFF2A2A2A), SpotifyColors.Black), startY = 0f, endY = 900f) }
     val listState = rememberLazyListState()
     var songToRemove by remember { mutableStateOf<Song?>(null) }
+    // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
+    val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
+    var songMenu by remember { mutableStateOf<Song?>(null) }
+    // Состав этого плейлиста менялся (например, трек убрали из шторки) — перечитываем
+    val addToPlaylistState by addToPlaylistViewModel.uiState.collectAsState()
+    LaunchedEffect(addToPlaylistState.changeToken) {
+        if (addToPlaylistState.changeToken > 0) viewModel.loadPlaylist(playlistId, forceRefresh = true)
+    }
 
     LaunchedEffect(playlistId) { viewModel.loadPlaylist(playlistId) }
 
@@ -157,15 +169,26 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                                 Text(text = "Треки которые вам не понравились автоматически попадают сюда", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = SpotifyColors.LightGray)
                             }
                             Spacer(Modifier.height(6.dp))
+                            // Автор — владелец плейлиста с сервера (у каждого он свой).
+                            // Если сервер владельца не отдал, показываем ник текущего пользователя;
+                            // если и его нет — строку автора не рисуем вовсе, чтобы не подставлять чужое имя.
+                            val ownerName = state.ownerName
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(modifier = Modifier.size(20.dp).clip(CircleShape).background(SpotifyColors.Purple), contentAlignment = Alignment.Center) {
-                                    Text("T", color = SpotifyColors.Black, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                                if (ownerName.isNotEmpty()) {
+                                    Box(modifier = Modifier.size(20.dp).clip(CircleShape).background(SpotifyColors.Purple), contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = ownerName.take(1).uppercase(),
+                                            color = SpotifyColors.Black,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(text = ownerName, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp), color = SpotifyColors.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Spacer(Modifier.width(6.dp))
+                                    Box(modifier = Modifier.size(3.dp).clip(CircleShape).background(SpotifyColors.LightGray))
+                                    Spacer(Modifier.width(6.dp))
                                 }
-                                Spacer(Modifier.width(6.dp))
-                                Text(text = "TwiliRi", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp), color = SpotifyColors.White)
-                                Spacer(Modifier.width(6.dp))
-                                Box(modifier = Modifier.size(3.dp).clip(CircleShape).background(SpotifyColors.LightGray))
-                                Spacer(Modifier.width(6.dp))
                                 Text(text = "${playlist.songCount} треков", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = SpotifyColors.LightGray)
                             }
                             Spacer(Modifier.height(4.dp))
@@ -249,7 +272,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                     trackNumber = null,
                     showCover = true,
                     onClick = { viewModel.playSongs(index) },
-                    onMore = {},
+                    onMore = { songMenu = song },
                     onLike = {
                         if (isLiked) songToRemove = song
                         else viewModel.toggleLike(song.id)
@@ -399,6 +422,30 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                 }
             )
         }
+
+        // Меню трека по «…»: добавить в плейлист, убрать из этого плейлиста, лайк, исключение
+        SongOptionsSheet(
+            song = songMenu,
+            coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
+            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
+            onDismiss = { songMenu = null },
+            onAddToPlaylist = {
+                val target = songMenu
+                songMenu = null
+                target?.let { addToPlaylistViewModel.open(it) }
+            },
+            onToggleLike = { songMenu?.let { viewModel.toggleLike(it.id) }; songMenu = null },
+            onToggleDislike = { songMenu?.let { viewModel.toggleDislike(it.id) }; songMenu = null },
+            onRemoveFromPlaylist = {
+                val target = songMenu
+                songMenu = null
+                target?.let { viewModel.removeSongFromPlaylist(it.id) }
+            },
+            shareUrl = null
+        )
+        // Сама шторка выбора плейлиста (не рисует ничего, пока трек не выбран)
+        AddToPlaylistHost(viewModel = addToPlaylistViewModel)
     }
 }
 

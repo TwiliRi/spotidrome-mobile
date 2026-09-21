@@ -180,6 +180,8 @@ data class PlaylistDetail(
     val name: String,
     val songCount: Int = 0,
     val duration: Int = 0,
+    /** Владелец плейлиста с сервера (атрибут owner в getPlaylist.view). */
+    val owner: String? = null,
     val entry: List<Song> = emptyList()
 )
 

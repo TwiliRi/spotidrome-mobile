@@ -22,6 +22,9 @@ import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.player.PlayerManager
 import com.sonicspot.player.ui.components.MiniPlayerModern
 import com.sonicspot.player.ui.components.SpotifyBottomNavModern
+import com.sonicspot.player.ui.random.BlackHoleOverlay
+import com.sonicspot.player.ui.random.PlayerCoverBounds
+import com.sonicspot.player.ui.random.RandomTrackViewModel
 import com.sonicspot.player.ui.navigation.AppNavGraph
 import com.sonicspot.player.ui.navigation.DeepLinks
 import com.sonicspot.player.ui.navigation.Screen
@@ -29,6 +32,7 @@ import com.sonicspot.player.ui.screens.player.FullPlayerScreen
 import com.sonicspot.player.ui.theme.Background
 import com.sonicspot.player.ui.theme.SonicSpotTheme
 import com.sonicspot.player.ui.theme.SpotifyColors
+import androidx.hilt.navigation.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -77,6 +81,11 @@ class MainActivity : ComponentActivity() {
                 var startDestination by remember { mutableStateOf<String?>(null) }
                 var showFullPlayer by remember { mutableStateOf(false) }
 
+                // Бросок «случайного трека»: фазы анимации живут во вью-модели,
+                // оверлей с чёрной дырой рисуется поверх всего приложения
+                val randomTrackViewModel: RandomTrackViewModel = hiltViewModel()
+                val randomRoll by randomTrackViewModel.state.collectAsState()
+
                 val currentSong by playerManager.currentSongFlow.collectAsState()
 
                 LaunchedEffect(Unit) {
@@ -103,6 +112,22 @@ class MainActivity : ComponentActivity() {
                 // Грамотная обработка back на главных вкладках: Search/Library -> Home, Home -> двойное нажатие для выхода
                 var backPressedOnce by remember { mutableStateOf(false) }
                 val snackbarHostState = remember { SnackbarHostState() }
+
+                // Трек выпал → под оверлеем открываем полноэкранный плеер,
+                // чтобы обложка улетела ровно в него (как в десктопе)
+                LaunchedEffect(randomRoll.openPlayerToken) {
+                    if (randomRoll.openPlayerToken > 0) showFullPlayer = true
+                }
+                LaunchedEffect(randomRoll.error) {
+                    randomRoll.error?.let { message ->
+                        randomTrackViewModel.consumeError()
+                        snackbarHostState.showSnackbar(message)
+                    }
+                }
+                // Плеер закрылся — цель перелёта больше не актуальна
+                LaunchedEffect(showFullPlayer) {
+                    if (!showFullPlayer) PlayerCoverBounds.clear()
+                }
 
                 BackHandler(enabled = !showFullPlayer && showBottomBar) {
                     when {
@@ -190,7 +215,9 @@ class MainActivity : ComponentActivity() {
                         AppNavGraph(
                             navController = navController,
                             startDestination = startDestination!!,
-                            onLoginSuccess = { scope.launch { } }
+                            onLoginSuccess = { scope.launch { } },
+                            randomBusy = randomRoll.isBusy,
+                            onRandomTrackClick = { randomTrackViewModel.roll() }
                         )
                     }
                 }
@@ -213,6 +240,12 @@ class MainActivity : ComponentActivity() {
                     }
                     FullPlayerScreen(onClose = { showFullPlayer = false })
                 }
+
+                // «Чёрная дыра» — самый верхний слой: тап или «назад» прерывает бросок
+                BlackHoleOverlay(
+                    state = randomRoll,
+                    onSkip = { randomTrackViewModel.skip() }
+                )
             }
         }
     }

@@ -42,6 +42,7 @@ class PreferencesManager @Inject constructor(
     private val searchHistoryVersionKey = intPreferencesKey("search_history_version")
     private val notificationButtonsKey = stringSetPreferencesKey("notification_buttons")
     private val librarySwitcherModeKey = stringPreferencesKey("library_switcher_mode")
+    private val randomTrackAnimKey = stringPreferencesKey("random_track_anim")
 
     val isLoggedIn: Flow<Boolean> = context.dataStore.data.map { prefs ->
         !prefs[serverUrlKey].isNullOrEmpty() && !prefs[usernameKey].isNullOrEmpty() && !prefs[tokenKey].isNullOrEmpty()
@@ -78,6 +79,11 @@ class PreferencesManager @Inject constructor(
     // Способ переключения музыкальной библиотеки: меню (чип + bottom sheet) или кнопки-чипы в строку
     val librarySwitcherModeFlow: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[librarySwitcherModeKey] ?: LIBRARY_SWITCHER_BUTTONS
+    }
+
+    // Анимация кнопки «случайный трек»: чёрная дыра или выключена (трек играет сразу)
+    val randomTrackAnimFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[randomTrackAnimKey] ?: RANDOM_ANIM_BLACKHOLE
     }
 
     suspend fun saveLogin(serverUrl: String, username: String, password: String) {
@@ -168,6 +174,12 @@ class PreferencesManager @Inject constructor(
         context.dataStore.edit { prefs -> prefs[librarySwitcherModeKey] = normalized }
     }
 
+    /** Сохраняет анимацию «случайного трека». Принимает только известные значения, иначе — чёрная дыра. */
+    suspend fun setRandomTrackAnim(mode: String) {
+        val normalized = if (mode == RANDOM_ANIM_OFF) RANDOM_ANIM_OFF else RANDOM_ANIM_BLACKHOLE
+        context.dataStore.edit { prefs -> prefs[randomTrackAnimKey] = normalized }
+    }
+
     suspend fun setNotificationButtons(buttons: Set<String>) {
         context.dataStore.edit { prefs -> prefs[notificationButtonsKey] = buttons }
     }
@@ -198,5 +210,11 @@ class PreferencesManager @Inject constructor(
 
         /** Переключение библиотек через кнопки: строка чипов «Все библиотеки» + папки прямо на экране. */
         const val LIBRARY_SWITCHER_BUTTONS = "buttons"
+
+        /** «Случайный трек» — анимация чёрной дыры (как в десктопном Spotidrome). */
+        const val RANDOM_ANIM_BLACKHOLE = "blackhole"
+
+        /** «Случайный трек» — без анимации: трек играет сразу. */
+        const val RANDOM_ANIM_OFF = "off"
     }
 }

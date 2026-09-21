@@ -45,6 +45,22 @@ class MusicRepository @Inject constructor(
     // а пойти в сеть. null -> Retrofit не добавит заголовок вовсе, и кэш работает как обычно.
     private fun cacheControl(forceRefresh: Boolean): String? = if (forceRefresh) "no-cache" else null
 
+    // ---------- учёт изменений плейлистов ----------
+    // Ответы getPlaylists.view / getPlaylist.view кэшируются OkHttp на 5 минут (ApiCacheInterceptor).
+    // После наших правок (добавили/убрали трек, создали плейлист) старый кэш показывал бы устаревший
+    // состав и счётчики, поэтому такие плейлисты помечаются «грязными»: первый следующий запрос
+    // идёт мимо кэша, а дальше свежий ответ снова живёт в кэше свои 5 минут.
+    private val dirtyPlaylists = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile
+    private var playlistsListDirty = false
+
+    /** Помечает плейлист (или весь список) как изменённый: следующее чтение пойдёт в сеть. */
+    private fun markPlaylistDirty(playlistId: String? = null) {
+        if (playlistId != null) dirtyPlaylists.add(playlistId)
+        playlistsListDirty = true
+    }
+
     fun getStreamUrl(songId: String): String {
         val cred = cachedCredentials ?: return ""
         return "${cred.serverUrl}/rest/stream.view?id=$songId&u=${cred.username}&t=${cred.token}&s=${cred.salt}&v=1.16.1&c=Spotidrome&f=json"
@@ -321,7 +337,8 @@ class MusicRepository @Inject constructor(
 
     suspend fun getPlaylists(forceRefresh: Boolean = false): Result<List<Playlist>> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getPlaylists(cacheControl(forceRefresh))
+            val res = api.getPlaylists(cacheControl(forceRefresh || playlistsListDirty))
+            playlistsListDirty = false
             Result.success(res.subsonicResponse.playlists?.playlist ?: emptyList())
         } catch (e: Exception) {
             Result.failure(e)
@@ -329,16 +346,20 @@ class MusicRepository @Inject constructor(
     }
 
     suspend fun getPlaylist(id: String, forceRefresh: Boolean = false): Result<PlaylistDetail> = withContext(Dispatchers.IO) {
+        // remove() возвращает true, если плейлист был помечен изменённым: тогда читаем мимо кэша.
+        val wasDirty = dirtyPlaylists.remove(id)
         try {
-            val res = api.getPlaylist(id, cacheControl(forceRefresh))
+            val res = api.getPlaylist(id, cacheControl(forceRefresh || wasDirty))
             res.subsonicResponse.playlist?.let { Result.success(it) } ?: Result.failure(Exception("Playlist not found"))
         } catch (e: Exception) {
+            if (wasDirty) dirtyPlaylists.add(id) // чтение не удалось — пометка остаётся
             Result.failure(e)
         }
     }
 
     suspend fun createPlaylist(name: String, isPublic: Boolean = false): Result<Playlist> = withContext(Dispatchers.IO) {
         try {
+            markPlaylistDirty()
             val res = api.createPlaylist(name, public = isPublic)
             res.subsonicResponse.playlist?.let {
                 // Страховка видимости: дублируем public через updatePlaylist — переживает
@@ -346,7 +367,10 @@ class MusicRepository @Inject constructor(
                 if (isPublic) {
                     try { api.updatePlaylist(playlistId = it.id, public = true) } catch (_: Exception) {}
                 }
-                Result.success(Playlist(id = it.id, name = it.name, songCount = it.songCount, duration = it.duration, public = isPublic))
+                // Автор — владелец из ответа сервера, а если он его не прислал,
+                // то текущий пользователь: свой плейлист всегда создаёт его автор.
+                val createdOwner = it.owner ?: runCatching { prefs.getCredentials().first().username }.getOrNull()
+                Result.success(Playlist(id = it.id, name = it.name, songCount = it.songCount, duration = it.duration, public = isPublic, owner = createdOwner))
             } ?: run {
                 val playlists = api.getPlaylists().subsonicResponse.playlists?.playlist ?: emptyList()
                 playlists.find { it.name == name }?.let { Result.success(it) } ?: Result.failure(Exception("Failed to create playlist"))
@@ -359,10 +383,39 @@ class MusicRepository @Inject constructor(
     suspend fun addToPlaylist(playlistId: String, songId: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             api.updatePlaylist(playlistId = playlistId, songIdToAdd = songId)
+            markPlaylistDirty(playlistId)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Убирает трек из плейлиста.
+     *
+     * Subsonic удаляет по позиции, а не по id, поэтому состав читается заново (мимо кэша —
+     * иначе позиция была бы посчитана по устаревшему списку) и позиция ищется на сервере.
+     * Если трека в плейлисте уже нет — это не ошибка: цель достигнута.
+     */
+    suspend fun removeSongFromPlaylist(playlistId: String, songId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val detail = getPlaylist(playlistId, forceRefresh = true).getOrElse { return@withContext Result.failure(it) }
+            val index = detail.entry.indexOfFirst { it.id == songId }
+            if (index < 0) return@withContext Result.success(Unit)
+            api.updatePlaylist(playlistId = playlistId, songIndexToRemove = index)
+            markPlaylistDirty(playlistId)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Сценарий «Новый плейлист» из шторки добавления: создаём плейлист и сразу кладём в него трек. */
+    suspend fun createPlaylistWithSong(name: String, songId: String, isPublic: Boolean = false): Result<Playlist> {
+        val created = createPlaylist(name, isPublic).getOrElse { return Result.failure(it) }
+        addToPlaylist(created.id, songId).getOrElse { return Result.failure(it) }
+        markPlaylistDirty(created.id)
+        return Result.success(created)
     }
 
     suspend fun removeFromPlaylist(playlistId: String, songIndex: Int): Result<Unit> = withContext(Dispatchers.IO) {
@@ -377,6 +430,7 @@ class MusicRepository @Inject constructor(
     suspend fun deletePlaylist(id: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             api.deletePlaylist(id)
+            markPlaylistDirty(id)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)

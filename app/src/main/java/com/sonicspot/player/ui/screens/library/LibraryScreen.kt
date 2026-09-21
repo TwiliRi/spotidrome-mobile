@@ -97,11 +97,9 @@ fun LibraryScreen(
                 } else {
                     Spacer(Modifier.weight(1f))
                 }
+                // Поиск по медиатеке отсюда убран: для поиска есть отдельная вкладка.
+                // Панель поиска (LibrarySearchPanel) осталась в коде — вернуть можно одной кнопкой.
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Search, "Поиск по медиатеке", tint = SpotifyColors.White,
-                        modifier = Modifier.size(24.dp).clickable { viewModel.setSearchActive(true) }
-                    )
                     Icon(
                         Icons.Default.Add, "Создать плейлист", tint = SpotifyColors.White,
                         modifier = Modifier.size(26.dp).clickable { showCreatePlaylistDialog = true }
@@ -207,6 +205,7 @@ fun LibraryScreen(
                         }
                         items(pinnedPlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
+                                currentUsername = state.currentUsername,
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
                                 isPinned = true,
@@ -217,6 +216,7 @@ fun LibraryScreen(
                         }
                         items(privatePlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
+                                currentUsername = state.currentUsername,
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
                                 isPinned = false,
@@ -227,6 +227,7 @@ fun LibraryScreen(
                         }
                         items(publicPlaylists, key = { it.id }) { pl ->
                             PlaylistCardModernWithPin(
+                                currentUsername = state.currentUsername,
                                 playlist = pl,
                                 coverUrl = viewModel.getCoverUrl(pl.coverArt, 336),
                                 isPinned = false,
@@ -242,6 +243,7 @@ fun LibraryScreen(
                             item { SectionHeaderSmall(title = "Закрепленные") }
                             items(pinnedPlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),
                                     isPinned = true,
@@ -299,6 +301,7 @@ fun LibraryScreen(
                             item { SectionHeaderSmall(title = "Личные • ${privatePlaylists.size}") }
                             items(privatePlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),
                                     isPinned = false,
@@ -313,6 +316,7 @@ fun LibraryScreen(
                             item { SectionHeaderSmall(title = "Общие • ${publicPlaylists.size}") }
                             items(publicPlaylists, key = { it.id }) { pl ->
                                 PlaylistRowWithPin(
+                                    currentUsername = state.currentUsername,
                                     playlist = pl,
                                     coverUrl = viewModel.getCoverUrl(pl.coverArt, 96),
                                     isPinned = false,
@@ -423,7 +427,8 @@ fun LibraryScreen(
             onDismiss = { showPlaylistSheet = false; selectedPlaylistForMenu = null },
             onPlay = { selectedPlaylistForMenu?.let { onPlaylistClick(it.id) } },
             onShuffle = {},
-            onPinToggle = { selectedPlaylistForMenu?.let { viewModel.togglePin(it.id) } }
+            onPinToggle = { selectedPlaylistForMenu?.let { viewModel.togglePin(it.id) } },
+            currentUsername = state.currentUsername
         )
     }
 
@@ -543,6 +548,10 @@ private fun AlbumRowWithMenu(album: com.sonicspot.player.data.model.Album, cover
 }
 
 @Composable
+// Панель поиска по медиатеке. Кнопка поиска из шапки убрана (для поиска есть отдельная
+// вкладка), поэтому сейчас панель не вызывается — оставлена, чтобы вернуть поиск одним
+// вызовом. @Suppress — чтобы сборка не ругалась на неиспользуемую функцию.
+@Suppress("unused")
 private fun LibrarySearchPanel(
     searchState: LibrarySearchState,
     onQueryChange: (String) -> Unit,

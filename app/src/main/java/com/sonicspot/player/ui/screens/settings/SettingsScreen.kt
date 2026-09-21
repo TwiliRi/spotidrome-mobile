@@ -37,6 +37,7 @@ fun SettingsScreen(
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showNotifButtonsDialog by remember { mutableStateOf(false) }
     var showLibrarySwitcherDialog by remember { mutableStateOf(false) }
+    var showRandomAnimDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -109,6 +110,17 @@ fun SettingsScreen(
                         subtitle = if (state.playQueueSyncEnabled) "Включена • getPlayQueue/savePlayQueue" else "Очередь только локально",
                         checked = state.playQueueSyncEnabled,
                         onCheckedChange = { viewModel.setPlayQueueSync(it) }
+                    )
+                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsActionRow(
+                        icon = Icons.Default.Casino,
+                        title = "Анимация случайного трека",
+                        subtitle = if (state.randomTrackAnim == PreferencesManager.RANDOM_ANIM_BLACKHOLE) {
+                            "Чёрная дыра • обложки, диск, горизонт"
+                        } else {
+                            "Выключена • трек играет сразу"
+                        },
+                        onClick = { showRandomAnimDialog = true }
                     )
                     HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsActionRow(
@@ -327,6 +339,44 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showNotifButtonsDialog = false }) { Text("Готово", color = SpotifyColors.Green) }
+            }
+        )
+    }
+
+    if (showRandomAnimDialog) {
+        AlertDialog(
+            onDismissRequest = { showRandomAnimDialog = false },
+            title = { Text("Анимация случайного трека") },
+            text = {
+                Column {
+                    Text(
+                        "Что показывать при нажатии на кубик в шапке «Главной». Сцена «Чёрная дыра» — как в десктопном Spotidrome: обложки вылетают из горизонта, потом засасываются обратно, и из дыры поднимается выпавший трек.",
+                        color = SpotifyColors.LightGray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LibrarySwitcherOptionRow(
+                        title = "Чёрная дыра",
+                        description = "Полная сцена с обложками вокруг горизонта событий",
+                        selected = state.randomTrackAnim == PreferencesManager.RANDOM_ANIM_BLACKHOLE,
+                        onClick = { viewModel.setRandomTrackAnim(PreferencesManager.RANDOM_ANIM_BLACKHOLE) }
+                    )
+                    LibrarySwitcherOptionRow(
+                        title = "Выключена",
+                        description = "Случайный трек играет сразу, без анимации",
+                        selected = state.randomTrackAnim != PreferencesManager.RANDOM_ANIM_BLACKHOLE,
+                        onClick = { viewModel.setRandomTrackAnim(PreferencesManager.RANDOM_ANIM_OFF) }
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Анимацию всегда можно прервать тапом по экрану — трек всё равно заиграет.",
+                        color = SpotifyColors.MediumGray,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 14.sp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showRandomAnimDialog = false }) { Text("Готово", color = SpotifyColors.Green) }
             }
         )
     }

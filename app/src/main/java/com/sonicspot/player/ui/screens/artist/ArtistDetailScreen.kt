@@ -35,10 +35,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.AlbumCardModern
+import com.sonicspot.player.ui.components.AddToPlaylistHost
 import com.sonicspot.player.ui.components.CoverArtImage
 import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.SectionHeaderModern
 import com.sonicspot.player.ui.components.SongRowModern
+import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
 import com.sonicspot.player.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -58,6 +60,8 @@ fun ArtistDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    // Шторка «Добавить в плейлист» — общая для всех экранов с треками
+    val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
 
     var showAllTracks by remember { mutableStateOf(false) }
     var showArtistOptions by remember { mutableStateOf(false) }
@@ -429,6 +433,9 @@ fun ArtistDetailScreen(
             )
         }
 
+        // Шторка выбора плейлиста: не рисует ничего, пока трек не выбран
+        AddToPlaylistHost(viewModel = addToPlaylistViewModel)
+
         if (showSongOptions && selectedSong != null) {
             ArtistSongOptionsBottomSheet(
                 song = selectedSong!!,
@@ -437,6 +444,12 @@ fun ArtistDetailScreen(
                 isDisliked = dislikedIds.contains(selectedSong!!.id),
                 shareUrl = viewModel.getSongShareUrl(selectedSong!!.id),
                 onDismiss = { showSongOptions = false; selectedSong = null },
+                onAddToPlaylist = {
+                    val target = selectedSong
+                    showSongOptions = false
+                    selectedSong = null
+                    target?.let { addToPlaylistViewModel.open(it) }
+                },
                 onPlayNext = { viewModel.addNext(selectedSong!!); showSongOptions = false },
                 onAddToQueue = { viewModel.addToQueue(selectedSong!!); showSongOptions = false },
                 onGoToAlbum = {
@@ -532,6 +545,7 @@ private fun ArtistSongOptionsBottomSheet(
     isDisliked: Boolean = false,
     shareUrl: String,
     onDismiss: () -> Unit,
+    onAddToPlaylist: () -> Unit,
     onPlayNext: () -> Unit,
     onAddToQueue: () -> Unit,
     onGoToAlbum: () -> Unit,
@@ -558,6 +572,13 @@ private fun ArtistSongOptionsBottomSheet(
                 }
             }
             HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.3f))
+            // Главное действие: тот же лист выбора плейлиста, что и в списках треков
+            BottomSheetItem(
+                icon = Icons.Default.PlaylistAdd,
+                title = "Добавить в плейлист",
+                subtitle = "Выбрать плейлист или создать новый",
+                onClick = onAddToPlaylist
+            )
             BottomSheetItem(icon = Icons.Default.SkipNext, title = "Играть следующим", onClick = onPlayNext)
             BottomSheetItem(icon = Icons.Default.QueueMusic, title = "Добавить в очередь", onClick = onAddToQueue)
             BottomSheetItem(icon = Icons.Default.Album, title = "Перейти к альбому", onClick = onGoToAlbum)

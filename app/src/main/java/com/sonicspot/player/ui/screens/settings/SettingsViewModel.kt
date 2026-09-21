@@ -27,7 +27,9 @@ data class SettingsUiState(
     val playQueueSyncEnabled: Boolean = true,
     val notificationButtons: Set<String> = PreferencesManager.NOTIF_BUTTONS_ALL,
     /** Способ переключения библиотек на «Главной» и в «Медиатеке». */
-    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS
+    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS,
+    /** Анимация кнопки «случайный трек»: чёрная дыра или без неё. */
+    val randomTrackAnim: String = PreferencesManager.RANDOM_ANIM_BLACKHOLE
 )
 
 @HiltViewModel
@@ -49,6 +51,7 @@ class SettingsViewModel @Inject constructor(
     private val playQueueSync = prefs.playQueueSyncFlow.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     private val notificationButtons = prefs.notificationButtonsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.NOTIF_BUTTONS_ALL)
     private val librarySwitcherMode = prefs.librarySwitcherModeFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.LIBRARY_SWITCHER_BUTTONS)
+    private val randomTrackAnim = prefs.randomTrackAnimFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.RANDOM_ANIM_BLACKHOLE)
 
     init {
         viewModelScope.launch {
@@ -82,6 +85,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             librarySwitcherMode.collect { v -> _uiState.value = _uiState.value.copy(librarySwitcherMode = v) }
         }
+        viewModelScope.launch {
+            randomTrackAnim.collect { v -> _uiState.value = _uiState.value.copy(randomTrackAnim = v) }
+        }
     }
 
     fun setSkipDisliked(enabled: Boolean) { viewModelScope.launch { prefs.setSkipDisliked(enabled) } }
@@ -91,6 +97,7 @@ class SettingsViewModel @Inject constructor(
     fun setPlayQueueSync(enabled: Boolean) { viewModelScope.launch { prefs.setPlayQueueSync(enabled) } }
     fun setNotificationButtons(buttons: Set<String>) { viewModelScope.launch { prefs.setNotificationButtons(buttons) } }
     fun setLibrarySwitcherMode(mode: String) { viewModelScope.launch { prefs.setLibrarySwitcherMode(mode) } }
+    fun setRandomTrackAnim(mode: String) { viewModelScope.launch { prefs.setRandomTrackAnim(mode) } }
     fun cleanupDuplicates() { viewModelScope.launch { dislikedRepository.cleanupDuplicateExcludedPlaylists() } }
     fun clearDisliked() { viewModelScope.launch { prefs.clearDisliked() } }
     fun clearPinned() { viewModelScope.launch { pinnedRepository.clearAllPins() } }

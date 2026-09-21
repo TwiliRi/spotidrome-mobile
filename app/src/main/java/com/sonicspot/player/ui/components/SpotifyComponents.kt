@@ -657,9 +657,25 @@ fun SpotifyBottomNavModern(currentRoute: String, onNavigate: (String) -> Unit, m
     }
 }
 
+// ==================== ПОДПИСЬ АВТОРА ПЛЕЙЛИСТА ====================
+/**
+ * Автор плейлиста для карточек, строк и шторок.
+ *
+ * Владелец приходит с сервера (атрибут owner в getPlaylists/getPlaylist) — у каждого
+ * плейлиста он свой. Если сервер его не прислал, показываем ник текущего пользователя:
+ * плейлист без владельца в своей медиатеке почти всегда свой. Выдуманное имя не подставляем.
+ */
+private fun playlistAuthor(playlist: Playlist, currentUsername: String?): String? =
+    playlist.owner?.takeIf { it.isNotBlank() }
+        ?: currentUsername?.takeIf { it.isNotBlank() }
+
+/** Склеивает части подписи через «•», выбрасывая пустые, — чтобы не оставалось висячих разделителей. */
+private fun joinMeta(vararg parts: String?): String =
+    parts.filterNotNull().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" • ")
+
 // ==================== PLAYLIST CARD ====================
 @Composable
-fun PlaylistCardModern(playlist: Playlist, coverUrl: String?, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun PlaylistCardModern(playlist: Playlist, coverUrl: String?, onClick: () -> Unit, modifier: Modifier = Modifier, currentUsername: String? = null) {
     val gradient = remember { Brush.linearGradient(colors = listOf(Color(0xFF450AF5), Color(0xFF8E8EE5))) }
     Column(modifier = modifier.width(152.dp).clickable { onClick() }) {
         Box(modifier = Modifier.size(152.dp).clip(RoundedCornerShape(6.dp)).background(gradient)) {
@@ -671,7 +687,7 @@ fun PlaylistCardModern(playlist: Playlist, coverUrl: String?, onClick: () -> Uni
         }
         Spacer(Modifier.height(6.dp))
         Text(playlist.name, style = SpotifyTextStyles.CardTitle.copy(fontSize = 13.sp), color = SpotifyColors.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("Плейлист • ${playlist.owner ?: "TwiliRi"}", style = SpotifyTextStyles.CardSubtitle.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(joinMeta("Плейлист", playlistAuthor(playlist, currentUsername)), style = SpotifyTextStyles.CardSubtitle.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -696,7 +712,7 @@ fun PlaylistRowModern(playlist: Playlist, coverUrl: String?, onClick: () -> Unit
 // ==================== PLAYLIST WITH PIN ====================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PlaylistRowWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean, isPublic: Boolean, onClick: () -> Unit, onPinClick: () -> Unit) {
+fun PlaylistRowWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean, isPublic: Boolean, onClick: () -> Unit, onPinClick: () -> Unit, currentUsername: String? = null) {
     Row(
         modifier = Modifier.fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onPinClick)
@@ -734,7 +750,7 @@ fun PlaylistRowWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean,
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (isPublic) Icons.Default.Public else Icons.Default.Lock, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(12.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("${if (isPublic) "Общий" else "Личный"} • ${playlist.owner ?: "TwiliRi"} • ${playlist.songCount}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(joinMeta(if (isPublic) "Общий" else "Личный", playlistAuthor(playlist, currentUsername), playlist.songCount.toString()), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         Icon(Icons.Default.ChevronRight, null, tint = SpotifyColors.MediumGray, modifier = Modifier.size(18.dp))
@@ -743,7 +759,7 @@ fun PlaylistRowWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean,
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PlaylistCardModernWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean, isPublic: Boolean, onClick: () -> Unit, onPinClick: () -> Unit) {
+fun PlaylistCardModernWithPin(playlist: Playlist, coverUrl: String?, isPinned: Boolean, isPublic: Boolean, onClick: () -> Unit, onPinClick: () -> Unit, currentUsername: String? = null) {
     Column(modifier = Modifier.width(152.dp).combinedClickable(onClick = onClick, onLongClick = onPinClick)) {
         Box(modifier = Modifier.size(152.dp).clip(RoundedCornerShape(6.dp)).background(
             Brush.linearGradient(colors = if (isPublic) listOf(Color(0xFF1E3264), Color(0xFF8D67AB)) else listOf(Color(0xFF450AF5), Color(0xFF8E8EE5)))
@@ -767,7 +783,7 @@ fun PlaylistCardModernWithPin(playlist: Playlist, coverUrl: String?, isPinned: B
         }
         Spacer(Modifier.height(6.dp))
         Text(playlist.name, style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp, fontWeight = if (isPinned) FontWeight.Bold else FontWeight.SemiBold), color = if (isPinned) SpotifyColors.Green else SpotifyColors.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${if (isPublic) "Общий" else "Личный"} • ${playlist.owner ?: "TwiliRi"}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(joinMeta(if (isPublic) "Общий" else "Личный", playlistAuthor(playlist, currentUsername)), style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -851,7 +867,8 @@ fun PlaylistOptionsBottomSheet(
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
     onPinToggle: () -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    currentUsername: String? = null
 ) {
     if (playlist == null) return
     ModalBottomSheet(
@@ -874,7 +891,7 @@ fun PlaylistOptionsBottomSheet(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(playlist.name, color = SpotifyColors.White, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text((if (playlist.public) "Общий" else "Личный") + " • " + (playlist.owner ?: "") + " • ${playlist.songCount}", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                    Text(joinMeta(if (playlist.public) "Общий" else "Личный", playlistAuthor(playlist, currentUsername), playlist.songCount.toString()), color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall, maxLines = 1)
                 }
             }
             HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.3f))

@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -49,7 +50,9 @@ data class HomeUiState(
     val musicFolders: List<MusicFolder> = emptyList(),
     val selectedFolderId: Int? = null,
     /** Как пользователь предпочитает переключать библиотеки: [PreferencesManager.LIBRARY_SWITCHER_MENU] или [PreferencesManager.LIBRARY_SWITCHER_BUTTONS]. */
-    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS
+    val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS,
+    /** Ник текущего пользователя — запасной вариант подписи автора, если сервер не отдал владельца. */
+    val currentUsername: String = ""
 ) {
     val pinnedPlaylists: List<Playlist> get() = playlists.filter { pinnedIds.contains(it.id) }
     val publicPlaylists: List<Playlist> get() = playlists.filter { it.public && !pinnedIds.contains(it.id) && it.name != DislikedRepository.EXCLUDED_PLAYLIST_NAME }
@@ -157,6 +160,12 @@ class HomeViewModel @Inject constructor(
             prefs.librarySwitcherModeFlow.collect { mode ->
                 _uiState.value = _uiState.value.copy(librarySwitcherMode = mode)
             }
+        }
+        viewModelScope.launch {
+            try {
+                val creds = prefs.getCredentials().first()
+                _uiState.value = _uiState.value.copy(currentUsername = creds.username)
+            } catch (_: Exception) {}
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {

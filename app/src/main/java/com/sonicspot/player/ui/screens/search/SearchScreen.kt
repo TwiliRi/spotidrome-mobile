@@ -31,6 +31,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.SearchHistoryEntry
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.*
+import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
 import com.sonicspot.player.ui.theme.*
 
 @Composable
@@ -48,6 +49,9 @@ fun SearchScreen(
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     val history by viewModel.searchHistory.collectAsState()
     val grouped by viewModel.groupedHistory.collectAsState()
+    // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
+    val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
+    var songMenu by remember { mutableStateOf<Song?>(null) }
     val listState = rememberLazyListState()
     var songToRemove by remember { mutableStateOf<Song?>(null) }
 
@@ -270,7 +274,7 @@ fun SearchScreen(
                                 isDisliked = isDisliked,
                                 showCover = true,
                                 onClick = { val idx = state.songs.indexOf(song); viewModel.playSongs(state.songs, idx) },
-                                onMore = {},
+                                onMore = { songMenu = song },
                                 onLike = {
                                     if (isLiked) songToRemove = song
                                     else viewModel.toggleLike(song.id)
@@ -322,6 +326,25 @@ fun SearchScreen(
                 onRemove = { viewModel.toggleLike(songToRemove?.id ?: "") }
             )
         }
+
+        // Меню трека по «…»: добавление в плейлист, лайк, исключение
+        SongOptionsSheet(
+            song = songMenu,
+            coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
+            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
+            onDismiss = { songMenu = null },
+            onAddToPlaylist = {
+                val target = songMenu
+                songMenu = null
+                target?.let { addToPlaylistViewModel.open(it) }
+            },
+            onToggleLike = { songMenu?.let { viewModel.toggleLike(it.id) }; songMenu = null },
+            onToggleDislike = { songMenu?.let { viewModel.toggleDislike(it.id) }; songMenu = null },
+            shareUrl = null
+        )
+        // Сама шторка выбора плейлиста (не рисует ничего, пока трек не выбран)
+        AddToPlaylistHost(viewModel = addToPlaylistViewModel)
     }
 }
 

@@ -52,7 +52,10 @@ sealed class Screen(val route: String) {
 fun AppNavGraph(
     navController: NavHostController,
     startDestination: String,
-    onLoginSuccess: () -> Unit = {}
+    onLoginSuccess: () -> Unit = {},
+    /** Бросок случайного трека идёт прямо сейчас (кнопка-кубик крутится). */
+    randomBusy: Boolean = false,
+    onRandomTrackClick: () -> Unit = {}
 ) {
     // Плавные переходы как в Spotify
     val slideDuration = 300
@@ -122,7 +125,9 @@ fun AppNavGraph(
                 onArtistClick = { id -> navController.navigate(Screen.ArtistDetail.createRoute(id)) },
                 onPlaylistClick = { id -> navController.navigate(Screen.PlaylistDetail.createRoute(id)) },
                 onSettingsClick = { navController.navigate(Screen.Settings.route) },
-                onRecentlyAddedClick = { navController.navigate(Screen.RecentlyAdded.route) }
+                onRecentlyAddedClick = { navController.navigate(Screen.RecentlyAdded.route) },
+                onRandomTrackClick = onRandomTrackClick,
+                randomBusy = randomBusy
             )
         }
 
