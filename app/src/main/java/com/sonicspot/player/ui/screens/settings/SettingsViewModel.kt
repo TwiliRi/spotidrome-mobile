@@ -24,7 +24,8 @@ data class SettingsUiState(
     val shuffleEnabled: Boolean = false,
     val crossfadeEnabled: Boolean = false,
     val crossfadeDuration: Int = 5,
-    val playQueueSyncEnabled: Boolean = true
+    val playQueueSyncEnabled: Boolean = true,
+    val notificationButtons: Set<String> = PreferencesManager.NOTIF_BUTTONS_ALL
 )
 
 @HiltViewModel
@@ -44,6 +45,7 @@ class SettingsViewModel @Inject constructor(
     private val crossfade = prefs.crossfadeFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     private val crossfadeDuration = prefs.crossfadeDurationFlow.stateIn(viewModelScope, SharingStarted.Eagerly, 5)
     private val playQueueSync = prefs.playQueueSyncFlow.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    private val notificationButtons = prefs.notificationButtonsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.NOTIF_BUTTONS_ALL)
 
     init {
         viewModelScope.launch {
@@ -71,6 +73,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             playQueueSync.collect { v -> _uiState.value = _uiState.value.copy(playQueueSyncEnabled = v) }
         }
+        viewModelScope.launch {
+            notificationButtons.collect { v -> _uiState.value = _uiState.value.copy(notificationButtons = v) }
+        }
     }
 
     fun setSkipDisliked(enabled: Boolean) { viewModelScope.launch { prefs.setSkipDisliked(enabled) } }
@@ -78,6 +83,7 @@ class SettingsViewModel @Inject constructor(
     fun setCrossfade(enabled: Boolean) { viewModelScope.launch { prefs.setCrossfade(enabled) } }
     fun setCrossfadeDuration(seconds: Int) { viewModelScope.launch { prefs.setCrossfadeDuration(seconds) } }
     fun setPlayQueueSync(enabled: Boolean) { viewModelScope.launch { prefs.setPlayQueueSync(enabled) } }
+    fun setNotificationButtons(buttons: Set<String>) { viewModelScope.launch { prefs.setNotificationButtons(buttons) } }
     fun cleanupDuplicates() { viewModelScope.launch { dislikedRepository.cleanupDuplicateExcludedPlaylists() } }
     fun clearDisliked() { viewModelScope.launch { prefs.clearDisliked() } }
     fun clearPinned() { viewModelScope.launch { pinnedRepository.clearAllPins() } }

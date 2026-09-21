@@ -1,6 +1,7 @@
 package com.sonicspot.player.player
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
@@ -578,6 +579,27 @@ class PlayerManager @Inject constructor(
         }
     }
 
+    /**
+     * Запускает MusicService (MediaSessionService). ВАЖНО: MediaSessionService НЕ стартует
+     * сам — его нужно запустить именно отсюда. Раньше сервис вообще не запускался
+     * («сам станет foreground»): не было ни MediaSession, ни плеера в шторке уведомлений,
+     * и система убивала/замораживала процесс в фоне и при блокировке экрана.
+     *
+     * Используем startService, НЕ startForegroundService: последний требует startForeground
+     * в течение 5 секунд, а Media3 поднимает foreground только когда реально идёт звук —
+     * отсюда и был ForegroundServiceDidNotStartInTimeException при быстром переключении
+     * треков. startService + автопереход Media3 в foreground при старте воспроизведения —
+     * штатный путь для музыкальных плееров (документация Android media).
+     */
+    private fun ensurePlaybackServiceStarted() {
+        try {
+            context.startService(Intent(context, MusicService::class.java))
+        } catch (_: Exception) {
+            // API 26+: старт сервиса из фона запрещён. Основной сценарий (нажатие play в UI)
+            // всегда стартует сервис из foreground, так что здесь тихий fallback нормален.
+        }
+    }
+
     fun getPlayer(): ExoPlayer {
         val current = exoPlayer
         if (current == null || isPlayerReleased(current)) {
@@ -616,6 +638,9 @@ class PlayerManager @Inject constructor(
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             _playerState.update { it.copy(isPlaying = isPlaying) }
                             if (isPlaying) {
+                                // Страховка: звук пошёл (в т.ч. AutoDJ/внешние кнопки) —
+                                // сервис должен жить, чтобы получить foreground+уведомление.
+                                ensurePlaybackServiceStarted()
                                 userWantsPlayback = true
                                 stallRecoveryAttempts = 0
                                 resetStallDetection()
@@ -1089,8 +1114,9 @@ class PlayerManager @Inject constructor(
         resetStallDetection()
         scrobbled50SongId = null
         scrobbledEndedSongId = null
-        // Не стартуем сервис вручную - MediaSessionService сам станет foreground когда появится нотификация
-        // Ручной startForegroundService вызывал ForegroundServiceDidNotStartInTimeException при быстром переключении треков
+        // Сервис ОБЯЗАН быть запущен: без него нет MediaSession → нет уведомления-плеера
+        // и фонового режима (см. ensurePlaybackServiceStarted).
+        ensurePlaybackServiceStarted()
         val player = try {
             getPlayer()
         } catch (e: Exception) {
@@ -1208,6 +1234,7 @@ class PlayerManager @Inject constructor(
         saveQueueToServerDebounced()
     }
     fun togglePlayPause() {
+        ensurePlaybackServiceStarted()
         try {
             val p = getPlayer()
             if (p.isPlaying) {

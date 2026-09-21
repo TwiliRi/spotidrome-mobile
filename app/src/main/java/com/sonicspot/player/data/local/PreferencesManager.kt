@@ -40,6 +40,7 @@ class PreferencesManager @Inject constructor(
     private val selectedMusicFolderIdKey = intPreferencesKey("selected_music_folder_id")
     private val searchHistoryJsonKey = stringPreferencesKey("search_history_json")
     private val searchHistoryVersionKey = intPreferencesKey("search_history_version")
+    private val notificationButtonsKey = stringSetPreferencesKey("notification_buttons")
 
     val isLoggedIn: Flow<Boolean> = context.dataStore.data.map { prefs ->
         !prefs[serverUrlKey].isNullOrEmpty() && !prefs[usernameKey].isNullOrEmpty() && !prefs[tokenKey].isNullOrEmpty()
@@ -67,6 +68,11 @@ class PreferencesManager @Inject constructor(
     val playQueueSyncFlow: Flow<Boolean> = context.dataStore.data.map { prefs -> prefs[playQueueSyncKey] ?: true }
     val selectedMusicFolderIdFlow: Flow<Int?> = context.dataStore.data.map { prefs -> prefs[selectedMusicFolderIdKey] }
     val searchHistoryJsonFlow: Flow<String> = context.dataStore.data.map { prefs -> prefs[searchHistoryJsonKey] ?: "[]" }
+
+    // Состав кнопок в шторке уведомления: любые комбинации лайк/дизлайк/шамбл
+    val notificationButtonsFlow: Flow<Set<String>> = context.dataStore.data.map { prefs ->
+        prefs[notificationButtonsKey] ?: NOTIF_BUTTONS_ALL
+    }
 
     suspend fun saveLogin(serverUrl: String, username: String, password: String) {
         val salt = AuthUtil.generateSalt()
@@ -150,6 +156,10 @@ class PreferencesManager @Inject constructor(
         }
     }
 
+    suspend fun setNotificationButtons(buttons: Set<String>) {
+        context.dataStore.edit { prefs -> prefs[notificationButtonsKey] = buttons }
+    }
+
     suspend fun saveSearchHistoryJson(json: String) {
         context.dataStore.edit { prefs ->
             prefs[searchHistoryJsonKey] = json
@@ -164,4 +174,11 @@ class PreferencesManager @Inject constructor(
     }
 
     suspend fun clear() { context.dataStore.edit { it.clear() } }
+
+    companion object {
+        const val NOTIF_BTN_LIKE = "like"
+        const val NOTIF_BTN_DISLIKE = "dislike"
+        const val NOTIF_BTN_SHUFFLE = "shuffle"
+        val NOTIF_BUTTONS_ALL = setOf(NOTIF_BTN_LIKE, NOTIF_BTN_DISLIKE, NOTIF_BTN_SHUFFLE)
+    }
 }

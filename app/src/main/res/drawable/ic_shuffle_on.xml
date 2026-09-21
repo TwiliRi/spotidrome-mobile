@@ -1,7 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--Shuffle включён — сплошные стрелки + точка. Зелёный = активное состояние.-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <path android:fillColor="#1DB954" android:pathData="M10.59,9.17L5.41,4L4,5.41L9.17,10.59L10.59,9.17ZM14.5,4L16.07,5.57L14.5,7.14L13.5,6.14L14.5,5.14L13.5,4.14L14.5,4ZM18.5,4L19.5,5L18.5,6L17.5,5L18.5,4ZM4,10L5,11L6,10L5,9L4,10ZM10.59,14.83L5.41,20L4,18.59L9.17,13.41L10.59,14.83ZM14.5,16.86L16.07,18.43L14.5,20L13.5,19L14.5,18L13.5,17L14.5,16.86ZM18.5,18L19.5,19L18.5,20L17.5,19L18.5,18ZM14.5,10.5L16.5,12.5L14.5,14.5L12.5,12.5L14.5,10.5ZM20.5,11.5L22,13L20.5,14.5L19,13L20.5,11.5Z"/>
+    <path android:fillColor="#FF1DB954" android:pathData="M10.59,9.17L5.41,4L4,5.41L9.17,10.59L10.59,9.17Z M14.5,4L16.54,6.04L4,18.59L5.41,20L17.97,7.46L20,9.5L20,4L14.5,4Z M14.83,13.41L13.42,14.82L16.55,17.95L14.5,20L20,20L20,14.5L17.96,16.54L14.83,13.41Z"/>
+    <path android:fillColor="#FF1DB954" android:pathData="M12,20.2a1.1,1.1 0,1 0,0,2.2a1.1,1.1 0,1 0,0,-2.2z"/>
 </vector>

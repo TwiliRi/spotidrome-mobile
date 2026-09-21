@@ -4,6 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -41,6 +44,23 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SonicSpotTheme {
+                // Android 13+: без POST_NOTIFICATIONS медиа-уведомление (плеер в шторке)
+                // не показывается. Спрашиваем один раз при запуске.
+                val notifPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { /* пользователь решил — идём дальше в любом случае */ }
+                LaunchedEffect(Unit) {
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        val granted = ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            android.Manifest.permission.POST_NOTIFICATIONS
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (!granted) {
+                            notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                }
+
                 val navController = rememberNavController()
                 val scope = rememberCoroutineScope()
                 var startDestination by remember { mutableStateOf<String?>(null) }

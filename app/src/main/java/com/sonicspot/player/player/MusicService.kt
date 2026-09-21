@@ -2,6 +2,7 @@ package com.sonicspot.player.player
 
 import android.app.NotificationManager
 import android.app.NotificationChannel
+import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
@@ -20,6 +21,7 @@ import coil.request.ImageRequest
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.sonicspot.player.R
+import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.data.repository.StarredRepository
@@ -41,7 +43,7 @@ class MusicService : MediaSessionService() {
     @Inject lateinit var dislikedRepository: DislikedRepository
     @Inject lateinit var starredRepository: StarredRepository
     @Inject lateinit var musicRepository: MusicRepository
-    @Inject lateinit var prefs: com.sonicspot.player.data.local.PreferencesManager
+    @Inject lateinit var prefs: PreferencesManager
 
     private var mediaSession: MediaSession? = null
     private val serviceJob = SupervisorJob()
@@ -154,9 +156,20 @@ class MusicService : MediaSessionService() {
             }
         }
 
+        // Тап по уведомлению открывает приложение (иначе по уведомлению ничего не происходит)
+        val sessionActivity = android.app.PendingIntent.getActivity(
+            this,
+            0,
+            android.content.Intent(this, com.sonicspot.player.MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(sessionCallback)
             .setBitmapLoader(bitmapLoader)
+            .setSessionActivity(sessionActivity)
             .build()
 
         val notificationIdProvider = DefaultMediaNotificationProvider.NotificationIdProvider { NOTIFICATION_ID }
@@ -168,6 +181,29 @@ class MusicService : MediaSessionService() {
         )
         notificationProvider.setSmallIcon(R.drawable.ic_music)
         setMediaNotificationProvider(notificationProvider)
+
+        // ============ ГЛАВНЫЙ ФИКС ФОНОВОГО РЕЖИМА И УВЕДОМЛЕНИЯ ============
+        // Сеанс ОБЯЗАН быть добавлен в сервис через addSession(). В Media3 1.7.1
+        // MediaNotificationManager.updateNotification() первым делом проверяет
+        // isSessionAdded(session) и при отсутствии сеанса в сервисе сразу вызывает
+        // removeNotification(). Сеанс сам по себе (просто MediaSession.Builder().build())
+        // НЕ регистрируется — регистрация происходит только когда контроллер подключается
+        // к сервису (onBind -> onGetSession -> addSession) или когда приложение вызывает
+        // addSession() явно. У приложения нет MediaController -> никто не подключался ->
+        // не было НИ уведомления, НИ foreground-статуса -> система убивала процесс при
+        // сворачивании. addSession() внутри создаёт служебный MediaController и оживляет
+        // всю цепочку: уведомление-плеер, foreground, кнопки гарнитуры/Bluetooth.
+        // Повторный addSession того же сеанса (из onGetSession при подключении внешних
+        // контроллеров) безопасен — он идемпотентен.
+        mediaSession?.let { addSession(it) }
+
+        // Логируем отказ Android 12+ в foreground (ограничение while-in-use), чтобы
+        // такие случаи были видны в logcat, а не происходили молча.
+        setListener(object : MediaSessionService.Listener {
+            override fun onForegroundServiceStartNotAllowedException() {
+                Log.w("MusicService", "ForegroundServiceStartNotAllowedException: не удалось поднять foreground")
+            }
+        })
 
         serviceScope.launch {
             playerManager.currentSongFlow.collect {
@@ -186,6 +222,11 @@ class MusicService : MediaSessionService() {
         }
         serviceScope.launch {
             prefs.likedIdsFlow.collect {
+                updateCustomLayout()
+            }
+        }
+        serviceScope.launch {
+            prefs.notificationButtonsFlow.collect {
                 updateCustomLayout()
             }
         }
@@ -234,7 +275,19 @@ class MusicService : MediaSessionService() {
             .setSessionCommand(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
             .build()
 
-        session.setCustomLayout(listOf(dislikeButton, shuffleButton, favoriteButton))
+        // Состав кнопок настраивается пользователем (Настройки → «Кнопки в уведомлении»):
+        // любые комбинации лайк/дизлайк/шамбл. Порядок в шторке фиксированный.
+        val enabledButtons = try {
+            prefs.notificationButtonsFlow.first()
+        } catch (_: Exception) {
+            PreferencesManager.NOTIF_BUTTONS_ALL
+        }
+        val buttons = buildList {
+            if (PreferencesManager.NOTIF_BTN_DISLIKE in enabledButtons) add(dislikeButton)
+            if (PreferencesManager.NOTIF_BTN_SHUFFLE in enabledButtons) add(shuffleButton)
+            if (PreferencesManager.NOTIF_BTN_LIKE in enabledButtons) add(favoriteButton)
+        }
+        session.setCustomLayout(buttons)
     }
 
     private fun createNotificationChannel() {

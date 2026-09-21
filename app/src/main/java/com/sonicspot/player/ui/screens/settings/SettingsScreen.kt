@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,6 +35,7 @@ fun SettingsScreen(
     var showClearDislikedDialog by remember { mutableStateOf(false) }
     var showClearPinnedDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showNotifButtonsDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -106,6 +108,17 @@ fun SettingsScreen(
                         subtitle = if (state.playQueueSyncEnabled) "Включена • getPlayQueue/savePlayQueue" else "Очередь только локально",
                         checked = state.playQueueSyncEnabled,
                         onCheckedChange = { viewModel.setPlayQueueSync(it) }
+                    )
+                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsActionRow(
+                        icon = Icons.Default.Notifications,
+                        title = "Кнопки в уведомлении",
+                        subtitle = buildList {
+                            if (PreferencesManager.NOTIF_BTN_DISLIKE in state.notificationButtons) add("Дизлайк")
+                            if (PreferencesManager.NOTIF_BTN_SHUFFLE in state.notificationButtons) add("Шаффл")
+                            if (PreferencesManager.NOTIF_BTN_LIKE in state.notificationButtons) add("Лайк")
+                        }.joinToString(", ").ifEmpty { "Не выбрано — только play/prev/next" },
+                        onClick = { showNotifButtonsDialog = true }
                     )
                 }
             }
@@ -267,6 +280,44 @@ fun SettingsScreen(
             dismissButton = { TextButton(onClick = { showLogoutDialog = false }) { Text("Отмена") } }
         )
     }
+
+    if (showNotifButtonsDialog) {
+        AlertDialog(
+            onDismissRequest = { showNotifButtonsDialog = false },
+            title = { Text("Кнопки в уведомлении") },
+            text = {
+                Column {
+                    Text(
+                        "Отметьте кнопки для шторки уведомления — любые комбинации. Изменения применяются сразу.",
+                        color = SpotifyColors.LightGray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    NotifButtonCheckRow(
+                        label = "Дизлайк — исключить трек",
+                        key = PreferencesManager.NOTIF_BTN_DISLIKE,
+                        selected = state.notificationButtons,
+                        onToggle = { viewModel.setNotificationButtons(it) }
+                    )
+                    NotifButtonCheckRow(
+                        label = "Шаффл — перемешивание",
+                        key = PreferencesManager.NOTIF_BTN_SHUFFLE,
+                        selected = state.notificationButtons,
+                        onToggle = { viewModel.setNotificationButtons(it) }
+                    )
+                    NotifButtonCheckRow(
+                        label = "Лайк — в избранное",
+                        key = PreferencesManager.NOTIF_BTN_LIKE,
+                        selected = state.notificationButtons,
+                        onToggle = { viewModel.setNotificationButtons(it) }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showNotifButtonsDialog = false }) { Text("Готово", color = SpotifyColors.Green) }
+            }
+        )
+    }
 }
 
 @Composable
@@ -383,5 +434,28 @@ private fun SettingsActionRow(icon: ImageVector, title: String, subtitle: String
             Text(subtitle, color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
         }
         Icon(Icons.Default.ChevronRight, null, tint = SpotifyColors.MediumGray, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun NotifButtonCheckRow(
+    label: String,
+    key: String,
+    selected: Set<String>,
+    onToggle: (Set<String>) -> Unit
+) {
+    val checked = key in selected
+    val toggle = { onToggle(if (checked) selected - key else selected + key) }
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable { toggle() }.padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = { toggle() },
+            colors = CheckboxDefaults.colors(checkedColor = SpotifyColors.Green)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(label, color = SpotifyColors.White, style = MaterialTheme.typography.bodyMedium)
     }
 }
