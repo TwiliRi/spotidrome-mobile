@@ -9,6 +9,7 @@ import com.sonicspot.player.data.api.NativeLibrary
 import com.sonicspot.player.data.api.NativeLoginRequest
 import com.sonicspot.player.data.local.PreferencesManager
 import com.sonicspot.player.data.model.*
+import com.sonicspot.player.util.CoverArt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -40,6 +41,10 @@ class MusicRepository @Inject constructor(
         authInterceptor.updateCache(creds)
     }
 
+    // При явном обновлении (pull-to-refresh) OkHttp обязан не брать ответ из дискового кэша,
+    // а пойти в сеть. null -> Retrofit не добавит заголовок вовсе, и кэш работает как обычно.
+    private fun cacheControl(forceRefresh: Boolean): String? = if (forceRefresh) "no-cache" else null
+
     fun getStreamUrl(songId: String): String {
         val cred = cachedCredentials ?: return ""
         return "${cred.serverUrl}/rest/stream.view?id=$songId&u=${cred.username}&t=${cred.token}&s=${cred.salt}&v=1.16.1&c=Spotidrome&f=json"
@@ -49,7 +54,11 @@ class MusicRepository @Inject constructor(
     fun getCoverArtUrl(coverArtId: String?, size: Int = 300): String? {
         if (coverArtId == null) return null
         val cred = cachedCredentials ?: return null
-        return "${cred.serverUrl}/rest/getCoverArt.view?id=$coverArtId&size=$size&u=${cred.username}&t=${cred.token}&s=${cred.salt}&v=1.16.1&c=Spotidrome"
+        // Из сети просим только один из двух размеров (CoverArt.LIST / CoverArt.LARGE).
+        // Остальное доделает Coil: он декодирует под конкретный sizePx элемента UI, а на диске
+        // и в сети обложка лежит в одном экземпляре на корзину вместо восьми.
+        val px = CoverArt.bucket(size)
+        return "${cred.serverUrl}/rest/getCoverArt.view?id=$coverArtId&size=$px&u=${cred.username}&t=${cred.token}&s=${cred.salt}&v=1.16.1&c=Spotidrome"
     }
 
     fun getServerUrl(): String? = cachedCredentials?.serverUrl
@@ -247,10 +256,10 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    suspend fun getArtists(musicFolderId: Int? = null): Result<List<Artist>> = withContext(Dispatchers.IO) {
+    suspend fun getArtists(musicFolderId: Int? = null, forceRefresh: Boolean = false): Result<List<Artist>> = withContext(Dispatchers.IO) {
         try {
             val folderId = musicFolderId ?: getSelectedMusicFolderId()
-            val res = api.getArtists(folderId)
+            val res = api.getArtists(folderId, cacheControl(forceRefresh))
             val list = res.subsonicResponse.artists?.index?.flatMap { it.artist } ?: emptyList()
             Result.success(list)
         } catch (e: Exception) {
@@ -258,56 +267,56 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    suspend fun getArtist(id: String): Result<ArtistDetail> = withContext(Dispatchers.IO) {
+    suspend fun getArtist(id: String, forceRefresh: Boolean = false): Result<ArtistDetail> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getArtist(id)
+            val res = api.getArtist(id, cacheControl(forceRefresh))
             res.subsonicResponse.artist?.let { Result.success(it) } ?: Result.failure(Exception("Artist not found"))
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun getAlbum(id: String): Result<AlbumDetail> = withContext(Dispatchers.IO) {
+    suspend fun getAlbum(id: String, forceRefresh: Boolean = false): Result<AlbumDetail> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getAlbum(id)
+            val res = api.getAlbum(id, cacheControl(forceRefresh))
             res.subsonicResponse.album?.let { Result.success(it) } ?: Result.failure(Exception("Album not found"))
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun getAlbums(type: String = "newest", size: Int = 50, offset: Int = 0, musicFolderId: Int? = null): Result<List<Album>> = withContext(Dispatchers.IO) {
+    suspend fun getAlbums(type: String = "newest", size: Int = 50, offset: Int = 0, musicFolderId: Int? = null, forceRefresh: Boolean = false): Result<List<Album>> = withContext(Dispatchers.IO) {
         try {
             val folderId = musicFolderId ?: getSelectedMusicFolderId()
-            val res = api.getAlbumList2(type, size, offset, folderId)
+            val res = api.getAlbumList2(type, size, offset, folderId, cacheControl(forceRefresh))
             Result.success(res.subsonicResponse.albumList2?.album ?: emptyList())
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun search(query: String, musicFolderId: Int? = null): Result<SearchResult3> = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, musicFolderId: Int? = null, forceRefresh: Boolean = false): Result<SearchResult3> = withContext(Dispatchers.IO) {
         try {
             val folderId = musicFolderId ?: getSelectedMusicFolderId()
-            val res = api.search3(query, musicFolderId = folderId)
+            val res = api.search3(query, musicFolderId = folderId, cacheControl = cacheControl(forceRefresh))
             Result.success(res.subsonicResponse.searchResult3 ?: SearchResult3())
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun getPlaylists(): Result<List<Playlist>> = withContext(Dispatchers.IO) {
+    suspend fun getPlaylists(forceRefresh: Boolean = false): Result<List<Playlist>> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getPlaylists()
+            val res = api.getPlaylists(cacheControl(forceRefresh))
             Result.success(res.subsonicResponse.playlists?.playlist ?: emptyList())
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun getPlaylist(id: String): Result<PlaylistDetail> = withContext(Dispatchers.IO) {
+    suspend fun getPlaylist(id: String, forceRefresh: Boolean = false): Result<PlaylistDetail> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getPlaylist(id)
+            val res = api.getPlaylist(id, cacheControl(forceRefresh))
             res.subsonicResponse.playlist?.let { Result.success(it) } ?: Result.failure(Exception("Playlist not found"))
         } catch (e: Exception) {
             Result.failure(e)
@@ -365,9 +374,9 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    suspend fun getStarred(): Result<StarredContainer> = withContext(Dispatchers.IO) {
+    suspend fun getStarred(forceRefresh: Boolean = false): Result<StarredContainer> = withContext(Dispatchers.IO) {
         try {
-            val res = api.getStarred()
+            val res = api.getStarred(cacheControl(forceRefresh))
             Result.success(res.subsonicResponse.starred ?: StarredContainer())
         } catch (e: Exception) {
             Result.failure(e)

@@ -114,9 +114,14 @@ dependencies {
     implementation("androidx.media3:media3-session:1.7.1")
     implementation("androidx.media3:media3-ui:1.7.1")
     implementation("androidx.media3:media3-common:1.7.1")
+    // PlaybackEngine: DefaultHttpDataSource/CacheDataSource/SimpleCache и StandaloneDatabaseProvider.
+    // Формально приходят транзитивно от media3-exoplayer (scope=compile), но мы импортируем их
+    // напрямую в коде -> держим в явном виде, чтобы не зависеть от чужого графа.
     implementation("androidx.media3:media3-datasource:1.7.1")
-    implementation("androidx.media3:media3-datasource-okhttp:1.7.1")
     implementation("androidx.media3:media3-database:1.7.1")
+    // Нужен для androidx.annotation.OptIn (media3 @UnstableApi требует opt-in, иначе lint
+    // UnsafeOptInUsageError валит assembleRelease). Приходит от Compose, но тоже используем сами.
+    implementation("androidx.annotation:annotation-experimental:1.4.1")
 
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")

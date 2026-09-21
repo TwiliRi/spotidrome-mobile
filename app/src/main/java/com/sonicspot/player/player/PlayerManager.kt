@@ -7,14 +7,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.sonicspot.player.data.local.PreferencesManager
-import com.sonicspot.player.player.AudioCacheManager
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.datasource.DefaultDataSource
-import okhttp3.OkHttpClient
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.debug.PerformanceTracer
@@ -56,12 +52,12 @@ sealed class SleepTimerState {
 }
 
 @Singleton
+@OptIn(UnstableApi::class)
 class PlayerManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: MusicRepository,
     private val prefs: PreferencesManager,
-    private val audioCacheManager: AudioCacheManager,
-    private val okHttpClient: OkHttpClient
+    private val playbackEngine: PlaybackEngine
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -114,22 +110,32 @@ class PlayerManager @Inject constructor(
     private var lastSavedQueueHash: Int = 0
     private var hasRestoredQueue: Boolean = false
 
-    // FIX: freeze protection
-    private var consecutiveErrors: Int = 0
+    // Защита от зависания. Единственный приём — «подтолкнуть» загрузку на текущей позиции.
+    // Корень проблемы и его лечение — в PlaybackEngine; почему здесь больше нет
+    // «перепрыгивания битого места» — комментарий у recoverStalledPlayback().
     private var lastPositionForStall: Long = -1L
     private var lastPositionTimeForStall: Long = System.currentTimeMillis()
     private var bufferingStartTime: Long = 0L
     private var retryJob: Job? = null
     private var isRecovering: Boolean = false
-    private val maxRetriesPerTrack = 3
-    private val bufferingTimeoutMs = 15_000L
-    private val stallTimeoutMs = 12_000L
-    // Для треков которые падают в одном месте
-    private var lastErrorPosition: Long = -1L
-    private var samePositionErrorCount: Int = 0
-    private var lastErrorSongId: String? = null
+    private var stallRecoveryAttempts: Int = 0
+    // «Пользователь хочет слышать музыку». Отдельно от player.isPlaying, потому что isPlaying ==
+    // false и в нормальном ребаффере, и в STATE_IDLE, когда воспроизведение убили изнутри.
+    private var userWantsPlayback: Boolean = false
+    private val bufferingTimeoutMs = 20_000L
+    private val stallTimeoutMs = 10_000L
+    private val maxStallRecoveries = 3
+    // Диагностика: состояние плеера пишется раз в 10 с, ПОКА КРУТИТСЯ ЦИКЛ ПРОГРЕССА — то есть
+    // и когда музыка играет, и когда стоит. Без этого лог при «молчаливом» зависании пуст.
+    private var lastHeartbeatMs: Long = 0L
 
     init {
+        // Прогреваем кэш учётных данных сразу: getStreamUrl() при cachedCredentials == null
+        // возвращает ПУСТУЮ строку, и MediaItem с пустым Uri = «трек не грузится» без внятной
+        // ошибки. Домашний экран тоже это делает, но играть могут раньше/из другого экрана.
+        scope.launch {
+            runCatching { repository.refreshCredentialsCache() }
+        }
         scope.launch {
             prefs.dislikedIdsFlow.collect { ids -> dislikedIds = ids }
         }
@@ -178,7 +184,7 @@ class PlayerManager @Inject constructor(
         }
         saveQueueJob?.cancel()
         saveQueueJob = scope.launch {
-            if (!immediate) delay(2000) // FIX: Tempus debounce 2с вместо 1с, меньше спама сети -> меньше фризов
+            if (!immediate) delay(1000) // debounce 1 сек
             saveQueueToServerNow(position)
         }
     }
@@ -223,204 +229,168 @@ class PlayerManager @Inject constructor(
         }
     }
 
-    // ==================== FREEZE FIX v2 - для битых треков на одной секунде ====================
+    // ==================== ВОССТАНОВЛЕНИЕ ПОСЛЕ ЗАВИСАНИЯ ====================
+    //
+    // Здесь жил «FREEZE FIX v2»: детектор сталла, прыжок на +3.5 с («перепрыгнуть битый кадр»)
+    // и повтор с «&format=raw». Он не лечил причину, но сам ломал воспроизведение тремя способами:
+    //
+    //  • skipCorruptedSegment() молча срезал 3.5 с музыки. «Битого» места в файле нет — тот же
+    //    трек играет и в веб-плеере, и после ручной перемотки. Ломалась не данные, а загрузка.
+    //  • «&format=raw» — этого значения в Subsonic API нет. Для многих серверов неизвестный
+    //    format означает «сделай транскод», а транскод отвечает 200 без Accept-Ranges и без
+    //    Content-Length (проверено на живом сервере). На таком ответе перезапрос куска
+    //    невозможен в принципе, и плеер залипал навсегда — то самое «дальше никак не грузится».
+    //  • повтор через setMediaItem()+prepare() выбрасывал уже скачанный буфер: трек начинал
+    //    грузиться с нуля, превращая короткую паузу в длинную.
+    //
+    // Причина устранена в PlaybackEngine (буферизация по времени + кэш). Ниже остаётся ровно
+    // один безопасный приём: seek на ТЕКУЩУЮ позицию. Он отменяет зависшую загрузку и запускает
+    // новую, сохранив MediaItem, очередь и уже скачанные байты — то же самое, что слушатель
+    // делает руками («перемотать на секунду вперёд»), только без потери секунды звука.
+
     private fun handlePlayerError(error: PlaybackException?) {
-        if (isRecovering) return
-        val code = error?.errorCode ?: -1
-        val msg = error?.message ?: "unknown"
-        val errorName = error?.errorCodeName ?: "UNKNOWN"
-        val currentSongId = _playerState.value.currentSong?.id
-        val currentPos = try { exoPlayer?.currentPosition ?: -1L } catch (_: Exception) { -1L }
-
-        Log.e("PlayerManager", "onPlayerError code=$code name=$errorName msg=$msg song=$currentSongId pos=$currentPos retries=$consecutiveErrors samePosCount=$samePositionErrorCount lastErrPos=$lastErrorPosition")
-
-        // Детекция битого места: если ошибка в том же треке на той же секунде (±2с)
-        if (currentSongId != null && currentSongId == lastErrorSongId && currentPos >= 0 && lastErrorPosition >= 0) {
-            if (kotlin.math.abs(currentPos - lastErrorPosition) < 2500L) {
-                samePositionErrorCount++
-                Log.w("PlayerManager", "Same position error $samePositionErrorCount at $currentPos")
-            } else {
-                samePositionErrorCount = 0
-            }
-        } else {
-            samePositionErrorCount = 0
-        }
-        lastErrorPosition = currentPos
-        lastErrorSongId = currentSongId
-
-        consecutiveErrors++
-
-        // Если 2 раза падает в одном месте - пробуем перепрыгнуть битый кусок +3с
-        if (samePositionErrorCount >= 1 && currentPos >= 0) {
-            Log.w("PlayerManager", "Trying to skip corrupted segment at $currentPos")
-            skipCorruptedSegment(currentPos)
-            return
-        }
-
-        // Если уже 2 раза пытались перепрыгнуть и все равно падает - скипаем трек
-        if (samePositionErrorCount >= 2) {
-            Log.w("PlayerManager", "Corrupted segment cannot be skipped, skipping track")
-            samePositionErrorCount = 0
-            consecutiveErrors = 0
-            scope.launch {
-                delay(300)
-                skipToNextOnError()
-            }
-            return
-        }
-
-        if (consecutiveErrors <= maxRetriesPerTrack) {
-            retryCurrentTrackWithFreshUrl(delayMs = 800L * consecutiveErrors)
-        } else {
-            Log.w("PlayerManager", "Max retries reached, skipping to next")
-            consecutiveErrors = 0
-            samePositionErrorCount = 0
-            scope.launch {
-                delay(300)
-                skipToNextOnError()
-            }
-        }
+        val errorName = error?.errorCodeName ?: "STALLED_WITHOUT_ERROR"
+        val pos = runCatching { exoPlayer?.currentPosition ?: -1L }.getOrDefault(-1L)
+        Log.e(
+            "PlayerManager",
+            "Playback problem: $errorName pos=$pos song=${_playerState.value.currentSong?.id} " +
+                "attempt=$stallRecoveryAttempts msg=${error?.message}"
+        )
+        recoverStalledPlayback(errorName)
     }
 
-    private fun skipCorruptedSegment(failedPos: Long) {
+    private fun recoverStalledPlayback(reason: String) {
         if (isRecovering) return
+        val player = exoPlayer ?: return
+        if (isPlayerReleased(player)) return
+
+        // Старый предохранитель «счётчик >= лимита -> сразу следующий трек» убран: теперь
+        // лестница ограничена сама (while по maxStallRecoveries), а счётчик всегда обнуляется
+        // в конце. Иначе унаследованное значение от прерванной попытки отправляло бы на
+        // следующий трек вообще без попыток восстановления.
         isRecovering = true
         retryJob?.cancel()
         retryJob = scope.launch {
             try {
-                delay(500)
+                val pos = runCatching { player.currentPosition }.getOrDefault(0L).coerceAtLeast(0L)
+                // Данные скачаны далеко вперёд, но звук не идёт — значит виноват тракт вывода,
+                // и перезапускать загрузку бессмысленно: качать уже нечего. Сразу идём к тому,
+                // что лечит именно вывод.
+                val sinkStall = reason.startsWith("SINK_STALL")
+                Log.w("PlayerManager", "Recovering stall: $reason at $pos (sinkStall=$sinkStall)")
                 cancelCrossfade()
-                try { exoPlayer?.volume = 1f } catch (_: Exception) {}
-                val player = exoPlayer ?: run { isRecovering = false; return@launch }
-                if (isPlayerReleased(player)) { isRecovering = false; return@launch }
+                runCatching { player.volume = 1f }
 
-                val state = _playerState.value
-                val dur = state.duration
-                // Прыгаем на +3.5 сек вперед чтобы перепрыгнуть битый фрейм
-                val skipForward = failedPos + 3500L
-                if (dur > 0 && skipForward < dur - 1000) {
-                    Log.i("PlayerManager", "Skipping corrupted segment: $failedPos -> $skipForward (dur $dur)")
-                    try {
-                        player.seekTo(skipForward)
-                        player.prepare()
-                        player.play()
-                        // Не сбрасываем isRecovering сразу, даем шанс
-                        delay(1000)
-                        // Если после скипа все еще ошибка - handlePlayerError вызовется снова и скипнет трек
-                    } catch (e: Exception) {
-                        Log.e("PlayerManager", "Skip segment failed ${e.message}")
-                        skipToNextOnError()
+                // Лестница прогоняется целиком за ОДИН заход, между ступенями — 3 с. Раньше
+                // между попытками приходилось ждать полный цикл детекции (10 с), и до
+                // пересоздания тракта проходило больше полминуты тишины.
+                var attempt = 0
+                var recovered = false
+                while (attempt < maxStallRecoveries && !recovered) {
+                    attempt++
+                    stallRecoveryAttempts = attempt
+                    when (attempt) {
+                        1 -> if (sinkStall) flushSinkByNudge(player, pos) else restartLoading(player, pos)
+                        2 -> restartAudioTrack(player)
+                        else -> recreateAudioTrack(player, pos)
                     }
+                    delay(3_000)
+                    val newPos = runCatching { player.currentPosition }.getOrDefault(pos)
+                    // УСПЕХ — ТОЛЬКО ЕСЛИ ПОЗИЦИЯ РЕАЛЬНО ПОШЛА. Проверка по playbackState тут
+                    // категорически недостаточна: при залипшем тракте состояние дёргается
+                    // BUFFERING↔READY каждые ~150 мс, «READY» ловится случайно, счётчик
+                    // обнулялся — и лестница не поднималась выше бесполезного в этом случае seekTo.
+                    recovered = newPos > pos + 800L
+                    Log.i(
+                        "PlayerManager",
+                        "recovery step $attempt: $pos -> $newPos (recovered=$recovered)"
+                    )
+                }
+                stallRecoveryAttempts = 0
+                if (recovered) {
+                    resetStallDetection()
                 } else {
-                    Log.w("PlayerManager", "Cannot skip forward, near end, skipping track")
+                    Log.w("PlayerManager", "Stall not recoverable after $attempt steps ($reason)")
                     skipToNextOnError()
                 }
-            } catch (_: Exception) {
+            } catch (t: Throwable) {
+                // Отмену корутины (например, смена трека во время паузы) не считаем ошибкой
+                if (t is CancellationException) throw t
+                Log.e("PlayerManager", "Stall recovery failed: ${t.message}")
             } finally {
                 isRecovering = false
             }
         }
     }
 
-    private fun retryCurrentTrackWithFreshUrl(delayMs: Long = 500L) {
-        if (isRecovering) return
-        isRecovering = true
-        retryJob?.cancel()
-        retryJob = scope.launch {
-            try {
-                delay(delayMs)
-                cancelCrossfade()
-                try { exoPlayer?.volume = 1f } catch (_: Exception) {}
-                try { repository.refreshCredentialsCache() } catch (_: Exception) {}
-                val state = _playerState.value
-                val current = state.currentSong ?: run { isRecovering = false; return@launch }
-                val player = exoPlayer
-                if (player == null || isPlayerReleased(player)) {
-                    isRecovering = false
-                    return@launch
-                }
-                val freshItem = try { createMediaItem(current) } catch (_: Exception) {
-                    MediaItem.Builder().setMediaId(current.id).setUri(repository.getStreamUrl(current.id)).build()
-                }
-                val pos = try { player.currentPosition.coerceAtLeast(0L) } catch (_: Exception) { 0L }
-
-                // Если это повторная ошибка на том же месте - пробуем +3с, иначе та же позиция
-                val safePos = when {
-                    samePositionErrorCount >= 1 && pos >= 0 -> {
-                        val jumped = pos + 3500L
-                        if (state.duration > 0 && jumped < state.duration - 1000) jumped else pos
-                    }
-                    pos > 0 && state.duration > 0 && pos > state.duration - 2000 -> 0L
-                    else -> pos
-                }
-
-                try {
-                    // Для битого файла пробуем альтернативный URL: оригинальный формат без транскода
-                    // Если обычный URL падает, пробуем с format=raw
-                    val useRawFormat = samePositionErrorCount >= 1 || consecutiveErrors >= 2
-                    val finalItem = if (useRawFormat) {
-                        try {
-                            val rawUrl = repository.getStreamUrl(current.id) + "&format=raw"
-                            Log.i("PlayerManager", "Trying raw format for corrupted track: $rawUrl")
-                            MediaItem.Builder().setMediaId(current.id).setUri(rawUrl).setMediaMetadata(
-                                androidx.media3.common.MediaMetadata.Builder().setTitle(current.title).build()
-                            ).build()
-                        } catch (_: Exception) { freshItem }
-                    } else freshItem
-
-                    player.setMediaItem(finalItem, safePos)
-                    player.prepare()
-                    player.play()
-                    Log.i("PlayerManager", "Retry track ${current.id} at $safePos (raw=$useRawFormat)")
-                } catch (e: Exception) {
-                    Log.e("PlayerManager", "Retry failed ${e.message}")
-                    skipToNextOnError()
-                }
-            } catch (_: Exception) {
-            } finally {
-                isRecovering = false
-            }
+    // Перезапустить загрузку, сохранив буфер и очередь. Лечит нехватку данных (сеть).
+    private fun restartLoading(player: Player, pos: Long) {
+        Log.w("PlayerManager", "recovery: restart loading at $pos")
+        // STATE_IDLE (очередь переписали без prepare()) лечится явным prepare(): seekTo готовит
+        // плеер лишь неявно, а на неявное в пути лечения зависаний полагаться нельзя.
+        if (runCatching { player.playbackState }.getOrDefault(Player.STATE_IDLE)
+            == Player.STATE_IDLE
+        ) {
+            runCatching { player.prepare() }
         }
+        runCatching { player.seekTo(pos) }
+        runCatching { player.playWhenReady = true }
+    }
+
+    // ГЛАВНОЕ ЛЕЧЕНИЕ ДЛЯ SINK_STALL.
+    // При залипшем устройстве Android подменяет время метки AudioTrack на текущее (в логе это
+    // «device stall time corrected»), поэтому AudioTrackPositionTracker считает
+    // positionUs = timestampPositionUs + ~0 и позиция замирает. getTimestamp() при этом успешен,
+    // так что AudioTimestampPoller НИКОГДА не выходит из STATE_TIMESTAMP_ADVANCING — само не
+    // рассосётся. Вылечить можно только flush(): по исходнику DefaultAudioSink (1.7.1, строка 1549)
+    // он делает audioTrackPositionTracker.reset() и пересоздаёт AudioTrack — поллер возвращается
+    // в INITIALIZING и снова считает позицию по playback head.
+    // Сдвиг на 250 мс, а не seekTo на ту же позицию: смена позиции гарантирует настоящий
+    // discontinuity и сброс. Вручную ты перематывал на секунду — работает ровно этот механизм.
+    private fun flushSinkByNudge(player: Player, pos: Long) {
+        Log.w("PlayerManager", "recovery: flush audio sink by +250ms nudge")
+        runCatching { player.seekTo(pos + 250L) }
+        runCatching { player.playWhenReady = true }
+    }
+
+    // Перезапустить звуковой тракт без потери буфера: audioTrack.pause()/play().
+    private fun restartAudioTrack(player: Player) {
+        Log.w("PlayerManager", "recovery: restart audio track (pause/play)")
+        runCatching { player.pause() }
+        runCatching { player.play() }
+    }
+
+    // Полное пересоздание AudioTrack и рендерера. Дорого, но с дисковым кэшем PlaybackEngine
+    // перекачивать данные не нужно.
+    private fun recreateAudioTrack(player: Player, pos: Long) {
+        Log.w("PlayerManager", "recovery: recreate audio track (stop+prepare+seek+play) at $pos")
+        runCatching { player.stop() }
+        runCatching { player.prepare() }
+        runCatching { player.seekTo(pos) }
+        runCatching { player.play() }
     }
 
     private fun skipToNextOnError() {
-        scope.launch {
+        retryJob?.cancel()
+        retryJob = scope.launch {
             try {
                 val state = _playerState.value
+                cancelCrossfade()
+                stallRecoveryAttempts = 0
+                val player = try { getPlayer() } catch (_: Exception) { null } ?: return@launch
+                runCatching { player.volume = 1f }
                 if (state.currentIndex + 1 < state.queue.size) {
-                    Log.i("PlayerManager", "Skipping to next due to error")
-                    cancelCrossfade()
-                    try { exoPlayer?.volume = 1f } catch (_: Exception) {}
-                    samePositionErrorCount = 0
-                    lastErrorPosition = -1L
-                    getPlayer().seekToNextMediaItem()
+                    Log.i("PlayerManager", "Skipping to next track after unrecoverable playback error")
+                    runCatching { player.seekToNextMediaItem() }
                 } else {
-                    Log.i("PlayerManager", "Last track error, retry from 0")
-                    samePositionErrorCount = 0
-                    lastErrorPosition = -1L
-                    // Последняя попытка с 0 и raw форматом
-                    val current = state.currentSong
-                    if (current != null) {
-                        try {
-                            val player = getPlayer()
-                            val rawUrl = repository.getStreamUrl(current.id) + "&format=raw"
-                            player.setMediaItem(MediaItem.Builder().setMediaId(current.id).setUri(rawUrl).build(), 0L)
-                            player.prepare()
-                            player.play()
-                        } catch (_: Exception) {
-                            retryCurrentTrackWithFreshUrl(300L)
-                        }
-                    } else {
-                        retryCurrentTrackWithFreshUrl(300L)
+                    Log.i("PlayerManager", "Last track unrecoverable, restarting it from the beginning")
+                    runCatching {
+                        player.seekTo(0L)
+                        player.play()
                     }
                 }
-            } catch (_: Exception) {
-                try {
-                    val state = _playerState.value
-                    if (state.queue.isNotEmpty()) {
-                        playSongs(state.queue, state.currentIndex.coerceAtLeast(0))
-                    }
-                } catch (_: Exception) {}
+            } catch (t: Throwable) {
+                Log.e("PlayerManager", "skipToNextOnError failed: ${t.message}")
             }
         }
     }
@@ -461,22 +431,6 @@ class PlayerManager @Inject constructor(
                         } else 0
 
                         // Восстанавливаем локально без сохранения обратно на сервер
-                        // FIX: createMediaItems на Main для 50 треков -> фриз 100ms+
-                        // Было: map с Uri.parse на Main
-                        // Стало: создаем в IO, setMediaItems на Main
-                        val mediaItems = withContext(Dispatchers.IO) {
-                            PerformanceTracer.start("createMediaItems_${songs.size}")
-                            val items = songs.map { song ->
-                                try { createMediaItem(song) } catch (_: Exception) {
-                                    MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
-                                }
-                            }
-                            val createMs = PerformanceTracer.end("createMediaItems_${songs.size}")
-                            if (createMs > 100) {
-                                PerformanceTracer.log("createMediaItems", "SLOW ${createMs}ms for ${songs.size} items")
-                            }
-                            items
-                        }
                         withContext(Dispatchers.Main) {
                             val player = try { getPlayer() } catch (_: Exception) { null }
                             if (player != null) {
@@ -485,30 +439,71 @@ class PlayerManager @Inject constructor(
                                         originalQueue.clear()
                                         originalQueue.addAll(songs)
                                     }
+                                    PerformanceTracer.start("createMediaItems_${songs.size}")
+                                    val mediaItems = songs.map { song ->
+                                        try { createMediaItem(song) } catch (_: Exception) {
+                                            MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
+                                        }
+                                    }
+                                    val createMs = PerformanceTracer.end("createMediaItems_${songs.size}")
+                                    if (createMs > 100) {
+                                        PerformanceTracer.log("createMediaItems", "🔴 SLOW ${createMs}ms for ${songs.size} items - Uri.parse heavy")
+                                    }
+
+                                    // Локальная сессия важнее серверной: если слушатель уже что-то
+                                    // слушает, держим ЕГО трек и позицию, а не прыгаем на серверные.
+                                    val localPlaying = userWantsPlayback || _playerState.value.isPlaying
+                                    var targetIndex = startIndex
+                                    var targetPos = position.coerceAtLeast(0L)
+                                    if (localPlaying) {
+                                        val curId = _playerState.value.currentSong?.id
+                                        val idx = curId?.let { id -> songs.indexOfFirst { it.id == id } } ?: -1
+                                        if (idx >= 0) {
+                                            targetIndex = idx
+                                            targetPos = runCatching { player.currentPosition }
+                                                .getOrDefault(targetPos).coerceAtLeast(0L)
+                                        }
+                                    }
+                                    // Было: prepare() вызывался только при autoPlay, «чтобы не лагало
+                                    // 2-3 минуты». setMediaItems() при этом оставляет плеер в STATE_IDLE,
+                                    // playWhenReady остаётся true, музыка молчит, а сторож зависания ничего
+                                    // не видит (он ждёт либо BUFFERING, либо READY). Это и был главный баг.
+                                    // prepare() дорог для ВСЕЙ очереди только на старте приложения — его и
+                                    // оставляем отложенным, а живое воспроизведение глушить нельзя.
+                                    val mustKeepAudio = localPlaying || autoPlay ||
+                                        player.playbackState != Player.STATE_IDLE
+
                                     PerformanceTracer.start("setMediaItems_${songs.size}")
-                                    player.setMediaItems(mediaItems, startIndex, position.coerceAtLeast(0L))
+                                    player.setMediaItems(mediaItems, targetIndex, targetPos)
                                     val setMs = PerformanceTracer.end("setMediaItems_${songs.size}")
 
-                                    if (autoPlay) {
+                                    if (mustKeepAudio) {
                                         PerformanceTracer.start("prepare_${songs.size}")
                                         player.prepare()
                                         val prepMs = PerformanceTracer.end("prepare_${songs.size}")
-                                        PerformanceTracer.log("prepare", "autoPlay=true ${songs.size} tracks ${prepMs}ms")
                                         if (prepMs > 500 && songs.size > 20) {
                                             PerformanceTracer.log("prepare", "🔴 prepare SLOW ${prepMs}ms for ${songs.size} tracks")
                                         }
-                                        player.play()
+                                        if (localPlaying || autoPlay) {
+                                            userWantsPlayback = true
+                                            player.play()
+                                        }
                                     } else {
-                                        PerformanceTracer.log("restoreQueue", "Skipping prepare() for autoPlay=false - FIX FOR 2-3 MIN LAG! setMediaItems=${setMs}ms")
+                                        PerformanceTracer.log(
+                                            "restoreQueue",
+                                            "Очередь восстановлена без prepare (ничего не играло), setMediaItems=${setMs}ms"
+                                        )
                                     }
-                                    // Если не автоплей - не вызываем prepare, только seek, подготовка будет при первом play
                                     _playerState.update {
                                         it.copy(
                                             queue = songs,
-                                            currentSong = songs.getOrNull(startIndex),
-                                            currentIndex = startIndex,
-                                            currentPosition = position,
-                                            isPlaying = autoPlay
+                                            currentSong = songs.getOrNull(targetIndex),
+                                            currentIndex = targetIndex,
+                                            currentPosition = runCatching { player.currentPosition }
+                                                .getOrDefault(targetPos),
+                                            // Не врать UI: было isPlaying = autoPlay, из-за чего
+                                            // интерфейс показывал «паузу» у реально играющего трека.
+                                            isPlaying = runCatching { player.isPlaying }.getOrDefault(false)
                                         )
                                     }
                                     scrobbled50SongId = null
@@ -549,6 +544,17 @@ class PlayerManager @Inject constructor(
             if (result.isSuccess) {
                 val pq = result.getOrNull()
                 if (pq != null && pq.entry.isNotEmpty()) {
+                    // ВАЖНО: проверяем ПОВТОРНО после сетевого запроса. Пока ждали getPlayQueue()
+                    // (1-6 с), пользователь успел нажать play. Раньше в этот момент очередь
+                    // перезаписывалась на живую и музыка умолкала — вот что выглядело как
+                    // «трек завис на одном и том же месте».
+                    if (userWantsPlayback || _playerState.value.isPlaying ||
+                        _playerState.value.queue.isNotEmpty()
+                    ) {
+                        hasRestoredQueue = true
+                        Log.i("PlayerManager", "Skip server queue restore: local playback already active")
+                        return
+                    }
                     // Если на сервере есть очередь и локально пусто - восстанавливаем
                     restoreQueueFromServer(autoPlay = false)
                 }
@@ -578,42 +584,40 @@ class PlayerManager @Inject constructor(
             exoPlayer = null
         }
         if (exoPlayer == null) {
-            // FIX: Tempus-inspired optimized LoadControl + audio cache
-            // Было: DefaultLoadControl default (min 50s, max 50s, playback 2.5s) -> много памяти + медленный старт
-            // Стало: Tempus style 20s min, 60s max, 2s playback, 5s after rebuffer -> быстрый старт + стабильность
-            val loadControl = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(
-                    20_000, // minBuffer 20s - предотвращает drip-feeding
-                    60_000, // maxBuffer 60s - стабильно на WiFi
-                    2_000,  // bufferForPlayback 2s - быстрый старт
-                    5_000   // bufferForPlaybackAfterRebuffer 5s
-                )
-                .setTargetBufferBytes(DefaultLoadControl.DEFAULT_TARGET_BUFFER_BYTES)
-                .setPrioritizeTimeOverSizeThresholds(true)
-                .build()
-
-            // Audio cache как в Tempus: SimpleCache 256MB LRU
-            val cache = audioCacheManager.getCache()
-            val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-            val cacheDataSourceFactory = CacheDataSource.Factory()
-                .setCache(cache)
-                .setUpstreamDataSourceFactory(okHttpDataSourceFactory)
-                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or CacheDataSource.FLAG_BLOCK_ON_CACHE)
-
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
-                .setDataSourceFactory(cacheDataSourceFactory)
-
             exoPlayer = ExoPlayer.Builder(context)
-                .setLoadControl(loadControl)
-                .setMediaSourceFactory(mediaSourceFactory)
-                .setHandleAudioBecomingNoisy(true)
+                // Без этого плеер наследует AudioAttributes.DEFAULT (USAGE_UNKNOWN): ОС считает
+                // его не-музыкой — нет медиа-маршрута, нет надлежащегоVolume-поведения, и при
+                // звонке такой поток могут не приглушить. handleAudioFocus = false сознательно:
+                // включённый фокус сам по себе ставит паузу, а паузы мы тут и так ловили.
+                .setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                        .build(),
+                    /* handleAudioFocus = */ false
+                )
+                // ПРИЧИНА САМОПРОИЗВОЛЬНЫХ ОСТАНОВОК НА BLUETOOTH.
+                // Media3 1.7.1, ExoPlayerImpl.onAudioBecomingNoisy() (строка 3184) делает ровно
+                // одно: updatePlayWhenReady(false, PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY).
+                // ACTION_AUDIO_BECOMING_NOISY прилетает при ЛЮБОМ событии гарнитуры — переподключение,
+                // смена дорожки, переговоры кодека A2DP, фантомные события на части устройств.
+                // Итог: музыка тихо останавливается, исключения нет, позиция замирает — ровно то,
+                // что было в логе. Ниже причина логируется; здесь она просто убрана.
+                // Кроссфейдный плеер в этом же файле всегда создавался с false.
+                .setHandleAudioBecomingNoisy(false)
                 .setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK)
+                // Буфер по времени + локальный кэш. Без этого Media3 на дефолтах
+                // (min==max==50 с) перезапускал HTTP-загрузку каждые 50 с и зависал,
+                // если сервер отвечал 200 вместо 206. См. PlaybackEngine.
+                .setMediaSourceFactory(playbackEngine.createMediaSourceFactory())
+                .setLoadControl(playbackEngine.createLoadControl())
                 .build().apply {
                     addListener(object : Player.Listener {
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             _playerState.update { it.copy(isPlaying = isPlaying) }
                             if (isPlaying) {
-                                consecutiveErrors = 0
+                                userWantsPlayback = true
+                                stallRecoveryAttempts = 0
                                 resetStallDetection()
                                 startProgressUpdates()
                             } else {
@@ -622,14 +626,37 @@ class PlayerManager @Inject constructor(
                                 }
                             }
                         }
+                        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                            val why = when (reason) {
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "USER_REQUEST"
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "AUDIO_BECOMING_NOISY"
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "REMOTE(MediaSession)"
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM -> "END_OF_MEDIA_ITEM"
+                                Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG -> "SUPPRESSED_TOO_LONG"
+                                else -> "reason=$reason"
+                            }
+                            Log.i(
+                                "PlayerManager",
+                                "playWhenReady=$playWhenReady ($why) wantPlayback=$userWantsPlayback " +
+                                    "pos=${runCatching { exoPlayer?.currentPosition }.getOrNull()} " +
+                                    "song=${_playerState.value.currentSong?.id}"
+                            )
+                            // Явная пауза пользователя снимает намерение. Отказ по фокусу, «шуму»
+                            // или внешней команде намерения НЕ снимает: пользователь-то слушать
+                            // хочет, и сторож обязан это видеть.
+                            if (!playWhenReady &&
+                                reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
+                            ) {
+                                userWantsPlayback = false
+                            }
+                        }
+
                         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                             val index = currentMediaItemIndex
                             _fullPlayerPosition.value = 0L
                             _fullPlayerProgress.value = 0f
-                            consecutiveErrors = 0
-                            samePositionErrorCount = 0
-                            lastErrorPosition = -1L
-                            lastErrorSongId = null
+                            stallRecoveryAttempts = 0
                             resetStallDetection()
                             startProgressUpdates()
 
@@ -679,11 +706,24 @@ class PlayerManager @Inject constructor(
                             }
                         }
                         override fun onPlaybackStateChanged(playbackState: Int) {
+                            val name = when (playbackState) {
+                                Player.STATE_IDLE -> "IDLE"
+                                Player.STATE_BUFFERING -> "BUFFERING"
+                                Player.STATE_READY -> "READY"
+                                Player.STATE_ENDED -> "ENDED"
+                                else -> "state=$playbackState"
+                            }
+                            Log.i(
+                                "PlayerManager",
+                                "state=$name playWhenReady=${runCatching { exoPlayer?.playWhenReady }.getOrNull()} " +
+                                    "pos=${runCatching { exoPlayer?.currentPosition }.getOrNull()} " +
+                                    "wantPlayback=$userWantsPlayback song=${_playerState.value.currentSong?.id}"
+                            )
                             when (playbackState) {
                                 Player.STATE_READY -> {
                                     _fullPlayerPosition.value = try { currentPosition } catch (_: Exception) { 0L }
                                     bufferingStartTime = 0L
-                                    consecutiveErrors = 0
+                                    stallRecoveryAttempts = 0
                                     startProgressUpdates()
                                 }
                                 Player.STATE_BUFFERING -> {
@@ -691,10 +731,12 @@ class PlayerManager @Inject constructor(
                                 }
                                 Player.STATE_IDLE -> {
                                     bufferingStartTime = 0L
-                                    // Если IDLE во время попытки играть - пробуем восстановить
-                                    if (_playerState.value.isPlaying && !isRecovering) {
-                                        Log.w("PlayerManager", "Player went IDLE while playing, trying recover")
-                                        retryCurrentTrackWithFreshUrl(500L)
+                                    // Если IDLE, а слушать хотели — восстанавливаем. Раньше здесь
+                                    // стояло только _playerState.value.isPlaying, но при
+                                    // becoming-noisy готовность играть снимается, isPlaying=false,
+                                    // и выход в IDLE оставался без присмотра.
+                                    if ((userWantsPlayback || _playerState.value.isPlaying) && !isRecovering) {
+                                        recoverStalledPlayback("player went IDLE while playing")
                                     }
                                 }
                                 Player.STATE_ENDED -> {
@@ -734,8 +776,6 @@ class PlayerManager @Inject constructor(
         progressJob?.cancel()
         progressJob = scope.launch {
             var lastStateUpdate = 0L
-            var lastFullUpdate = 0L
-            var lastPosForFull = -1L
             while (isActive) {
                 try {
                     val player = exoPlayer ?: break
@@ -743,19 +783,9 @@ class PlayerManager @Inject constructor(
                     val pos = try { player.currentPosition } catch (_: Exception) { 0L }
                     val dur = try { player.duration.coerceAtLeast(0L) } catch (_: Exception) { 0L }
                     val progress = if (dur > 0) pos.toFloat() / dur else 0f
+                    _fullPlayerPosition.value = pos
+                    _fullPlayerProgress.value = progress
                     val now = System.currentTimeMillis()
-                    // FIX: throttle full player to 200ms and only if position changed >200ms or progress >0.005
-                    // Было: 50ms -> 20 рекомпозиций/сек FullPlayer + lyrics binary search каждую 50ms -> лаг
-                    // Стало: 200ms -> 5 рекомпозиций/сек, достаточно для слайдера и текста
-                    if (now - lastFullUpdate > 200 && kotlin.math.abs(pos - lastPosForFull) > 150) {
-                        _fullPlayerPosition.value = pos
-                        // distinct until changed 0.005 to avoid slider jitter
-                        if (kotlin.math.abs(progress - _fullPlayerProgress.value) > 0.003f) {
-                            _fullPlayerProgress.value = progress
-                        }
-                        lastFullUpdate = now
-                        lastPosForFull = pos
-                    }
                     if (now - lastStateUpdate > 500) {
                         _playerState.update { it.copy(currentPosition = pos, duration = dur, progress = progress) }
                         lastStateUpdate = now
@@ -773,44 +803,96 @@ class PlayerManager @Inject constructor(
                         savePositionToServerIfNeeded(pos)
                     }
 
-                    // === FREEZE PROTECTION ===
+                    // === СТОРОЖ ЗАВИСАНИЯ ===
+                    // Только детектирует и один раз подталкивает загрузку. Он намеренно НЕ
+                    // меняет позицию и НЕ переопределяет MediaItem: и то и другое раньше
+                    // сбрасывало уже скачанный буфер и превращало паузу в повторную загрузку.
                     val playbackState = try { player.playbackState } catch (_: Exception) { Player.STATE_IDLE }
                     val isPlaying = try { player.isPlaying } catch (_: Exception) { false }
                     val playWhenReady = try { player.playWhenReady } catch (_: Exception) { false }
 
-                    // Buffering timeout
-                    if (playbackState == Player.STATE_BUFFERING && playWhenReady) {
-                        if (bufferingStartTime == 0L) bufferingStartTime = now
-                        else if (now - bufferingStartTime > bufferingTimeoutMs && !isRecovering) {
-                            Log.w("PlayerManager", "Buffering timeout ${bufferingTimeoutMs}ms, recovering")
-                            bufferingStartTime = 0L
-                            handlePlayerError(null)
-                        }
-                    } else if (playbackState == Player.STATE_READY) {
-                        if (bufferingStartTime != 0L) bufferingStartTime = 0L
+                    // Состояние плеера тут намеренно НЕ участвует: прежняя версия требовала
+                    // STATE_READY (или STATE_BUFFERING + playWhenReady), поэтому «playWhenReady=true
+                    // при STATE_IDLE» — то, во что превращало воспроиз перезаписью очереди без
+                    // prepare(), — было для сторожа невидимо: 100 секунд тишины и ни одной строки
+                    // в логе. Критерий теперь один: звук хотят, а позиция не движется.
+                    // Критерий — намерение слушателя, НЕ playWhenReady. Если что-то сняло
+                    // playWhenReady за спиной пользователя (AUDIO_BECOMING_NOISY при отключении
+                    // Bluetooth, команда MediaSession, переустановка очереди), прежняя проверка
+                    // «userWantsPlayback && playWhenReady» как раз и слепла: позиция стояла,
+                    // а сторож молчал. Теперь молчание невозможно.
+                    val wantSound = userWantsPlayback
+                    if (now - lastHeartbeatMs >= 10_000L) {
+                        lastHeartbeatMs = now
+                        Log.d(
+                            "PlayerManager",
+                            "heartbeat: pos=$pos dur=$dur state=$playbackState isPlaying=$isPlaying " +
+                                "playWhenReady=$playWhenReady wantPlayback=$wantSound " +
+                                "buffered=${runCatching { player.bufferedPosition }.getOrNull()} " +
+                                "song=${_playerState.value.currentSong?.id}"
+                        )
                     }
-
-                    // Stall detection: position не двигается хотя должен играть - часто битый файл
-                    if (isPlaying && playbackState == Player.STATE_READY && dur > 0 && pos > 0) {
-                        if (lastPositionForStall == pos) {
-                            if (now - lastPositionTimeForStall > stallTimeoutMs && !isRecovering) {
-                                Log.w("PlayerManager", "Stall detected pos=$pos stuck for ${stallTimeoutMs}ms")
-                                resetStallDetection()
-                                // Если сталл на одном месте - пробуем перепрыгнуть
-                                if (lastErrorPosition >= 0 && kotlin.math.abs(pos - lastErrorPosition) < 2500) {
-                                    skipCorruptedSegment(pos)
-                                } else {
-                                    retryCurrentTrackWithFreshUrl(300L)
-                                }
-                            }
+                    if (!wantSound) {
+                        if (lastPositionForStall != -1L && now - lastPositionTimeForStall > 2000) {
+                            resetStallDetection()
+                        }
+                        bufferingStartTime = 0L
+                    } else {
+                        if (playbackState == Player.STATE_BUFFERING) {
+                            if (bufferingStartTime == 0L) bufferingStartTime = now
                         } else {
+                            bufferingStartTime = 0L
+                        }
+                        val longBuffering = playbackState == Player.STATE_BUFFERING &&
+                            now - bufferingStartTime > bufferingTimeoutMs
+                        // pos == 0 — это ещё не «зависание», а медленный старт (34 МБ FLAC по
+                        // мобильной сети легко идёт 15-20 с). Для него порог больше, иначе
+                        // восстановление само бы и запускало бесконечные перезагрузки.
+                        val aheadNow = runCatching { player.bufferedPosition }.getOrDefault(pos) - pos
+                        val stuckMs = when {
+                            // playWhenReady снят при живом намерении слушать — это не медленный
+                            // старт, а немедленная неисправность: воспроизведение кто-то
+                            // остановил (becoming-noisy, внешняя команда). Ждать 10 с тут нечего.
+                            !playWhenReady -> 1_500L
+                            // Данных впереди с запасом, а позиция стоит — это НЕ сеть и НЕ
+                            // медленный старт, а сломанный тракт вывода. Здесь ложного
+                            // срабатывания бояться нечего, поэтому не ждём: при живом запасе
+                            // данных сброс буфера нам ничего не стоит.
+                            aheadNow > 2_000L -> 5_000L
+                            pos > 0L -> stallTimeoutMs
+                            else -> bufferingTimeoutMs
+                        }
+                        val frozen = lastPositionForStall == pos &&
+                            now - lastPositionTimeForStall > stuckMs
+                        if (pos != lastPositionForStall) {
                             lastPositionForStall = pos
                             lastPositionTimeForStall = now
                         }
-                    } else if (!isPlaying) {
-                        // На паузе сбрасываем детекцию чтобы не триггерить
-                        if (lastPositionForStall != -1L && now - lastPositionTimeForStall > 2000) {
-                            resetStallDetection()
+                        if (longBuffering || frozen) {
+                            lastPositionTimeForStall = now
+                            bufferingStartTime = now
+                            val buffered = runCatching { player.bufferedPosition }.getOrDefault(-1L)
+                            val suppr = runCatching { player.playbackSuppressionReason }.getOrNull()
+                            val err = runCatching { player.playerError?.errorCodeName }.getOrNull()
+                            // Главный водораздел: данные ЕСТЬ, но звук не идёт — значит дело не в
+                            // сети и не в буфере, а в тракте вывода. buffered - pos > 2 с означает
+                            // «скачано далеко вперёд, но не проигрывается».
+                            val ahead = buffered - pos
+                            val kind = when {
+                                !playWhenReady -> "PLAY_WHEN_READY_FALSE(кто-то снял готовность играть)"
+                                playbackState == Player.STATE_IDLE -> "IDLE(плеер не подготовлен)"
+                                playbackState == Player.STATE_ENDED -> "ENDED"
+                                ahead > 2_000L -> "SINK_STALL(данные есть, +${ahead}мс вперёд)"
+                                else -> "NO_DATA(нехватка данных, +${ahead}мс)"
+                            }
+                            Log.w(
+                                "PlayerManager",
+                                "Playback not advancing at $pos ms: $kind state=$playbackState " +
+                                    "isPlaying=$isPlaying playWhenReady=$playWhenReady " +
+                                    "buffered=$buffered suppression=$suppr error=$err " +
+                                    "song=${_playerState.value.currentSong?.id}"
+                            )
+                            recoverStalledPlayback(kind)
                         }
                     }
 
@@ -825,7 +907,7 @@ class PlayerManager @Inject constructor(
                         }
                     }
 
-                    delay(if (isPlaying) 200 else 500)
+                    delay(if (isPlaying) 50 else 300)
                 } catch (_: Exception) {
                     delay(300)
                 }
@@ -835,80 +917,65 @@ class PlayerManager @Inject constructor(
 
     private fun triggerCrossfade(remainingMs: Long) {
         if (isCrossfading) return
-        if (!crossfadeEnabled) return
         val state = _playerState.value
-        if (state.queue.size > 100) return // FIX: не делаем кроссфейд для огромных очередей
         val nextSong = state.queue.getOrNull(state.currentIndex + 1) ?: return
         val fadeDuration = remainingMs.coerceIn(500L, (crossfadeDurationSec * 1000L).coerceIn(1000L, 12000L))
         isCrossfading = true
 
         try {
             if (crossfadePlayer == null || isPlayerReleased(crossfadePlayer!!)) {
-                crossfadePlayer = ExoPlayer.Builder(context).build().apply {
-                    setHandleAudioBecomingNoisy(false)
-                }
+                crossfadePlayer = ExoPlayer.Builder(context)
+                    .setAudioAttributes(
+                        androidx.media3.common.AudioAttributes.Builder()
+                            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                            .build(),
+                        false
+                    )
+                    .setMediaSourceFactory(playbackEngine.createMediaSourceFactory())
+                    .setLoadControl(playbackEngine.createLoadControl())
+                    .build().apply {
+                        // Копируем аудио атрибуты
+                        setHandleAudioBecomingNoisy(false)
+                    }
             }
             val cfPlayer = crossfadePlayer!!
             try { cfPlayer.clearMediaItems() } catch (_: Exception) {}
-            // FIX: createMediaItem в IO чтобы не фризить
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val nextItem = try { createMediaItem(nextSong) } catch (_: Exception) {
-                        MediaItem.Builder().setMediaId(nextSong.id).setUri(repository.getStreamUrl(nextSong.id)).build()
-                    }
-                    withContext(Dispatchers.Main) {
-                        try {
-                            cfPlayer.setMediaItem(nextItem)
-                            cfPlayer.prepare()
-                            cfPlayer.volume = 0f
-                            cfPlayer.play()
-                        } catch (_: Exception) {
-                            isCrossfading = false
-                            return@withContext
-                        }
+            cfPlayer.setMediaItem(createMediaItem(nextSong))
+            cfPlayer.prepare()
+            cfPlayer.volume = 0f
+            cfPlayer.play()
 
-                        crossfadeJob?.cancel()
-                        crossfadeJob = scope.launch {
-                            val steps = 15 // FIX: 30 -> 15 шагов, меньше нагрузки на Main
-                            val stepMs = fadeDuration / steps
-                            for (i in 0..steps) {
-                                val p = i.toFloat() / steps
-                                try {
-                                    exoPlayer?.volume = (1f - p).coerceIn(0f, 1f)
-                                    cfPlayer.volume = p.coerceIn(0f, 1f)
-                                } catch (_: Exception) {}
-                                delay(stepMs)
-                            }
-                            try {
-                                val main = exoPlayer
-                                if (main != null && !isPlayerReleased(main)) {
-                                    if (main.currentMediaItemIndex == state.currentIndex) {
-                                        main.seekTo(state.currentIndex + 1, fadeDuration.coerceAtMost(10000L))
-                                    } else {
-                                        main.seekTo(fadeDuration.coerceAtMost(main.duration.coerceAtLeast(fadeDuration)))
-                                    }
-                                    main.volume = 1f
-                                }
-                                cfPlayer.pause()
-                                cfPlayer.clearMediaItems()
-                                cfPlayer.volume = 0f
-                            } catch (_: Exception) {}
-                            isCrossfading = false
-                            // FIX: освобождаем кроссфейд плеер через 10с если не используется
-                            scope.launch {
-                                delay(10000)
-                                if (!isCrossfading) {
-                                    try {
-                                        crossfadePlayer?.release()
-                                        crossfadePlayer = null
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                        }
-                    }
-                } catch (_: Exception) {
-                    withContext(Dispatchers.Main) { isCrossfading = false }
+            crossfadeJob?.cancel()
+            crossfadeJob = scope.launch {
+                val steps = 30
+                val stepMs = fadeDuration / steps
+                for (i in 0..steps) {
+                    val p = i.toFloat() / steps
+                    try {
+                        exoPlayer?.volume = (1f - p).coerceIn(0f, 1f)
+                        cfPlayer.volume = p.coerceIn(0f, 1f)
+                    } catch (_: Exception) {}
+                    delay(stepMs)
                 }
+                try {
+                    // После кроссфейда переключаем основной плеер на следующий трек с позицией = длительность кроссфейда
+                    val main = exoPlayer
+                    if (main != null && !isPlayerReleased(main)) {
+                        // Основной плеер уже должен был перейти на следующий трек автоматически, но на всякий случай форсируем
+                        if (main.currentMediaItemIndex == state.currentIndex) {
+                            main.seekTo(state.currentIndex + 1, fadeDuration.coerceAtMost(10000L))
+                        } else {
+                            // Если уже перешел, просто синхронизируем позицию
+                            main.seekTo(fadeDuration.coerceAtMost(main.duration.coerceAtLeast(fadeDuration)))
+                        }
+                        main.volume = 1f
+                    }
+                    cfPlayer.pause()
+                    cfPlayer.clearMediaItems()
+                    cfPlayer.volume = 0f
+                } catch (_: Exception) {}
+                isCrossfading = false
             }
         } catch (_: Exception) {
             isCrossfading = false
@@ -944,6 +1011,13 @@ class PlayerManager @Inject constructor(
     }
 
     private fun createMediaItem(song: Song): MediaItem {
+        val streamUrl = repository.getStreamUrl(song.id)
+        if (streamUrl.isBlank()) {
+            // Пустой URL = кэш учётных данных ещё не прогрет (холодный старт). Греем его прямо
+            // сейчас: иначе ExoPlayer получил бы пустой Uri и молча «вечно грузил».
+            Log.e("PlayerManager", "Blank stream url for song=${song.id}: credentials cache not ready, warming up")
+            scope.launch { runCatching { repository.refreshCredentialsCache() } }
+        }
         // FIX: нотификация 200px достаточно, было 500px -> экономия 2.5x трафика на каждый трек в очереди
         val coverUrl = try {
             repository.getCoverArtUrl(song.coverArt, 200)
@@ -959,7 +1033,7 @@ class PlayerManager @Inject constructor(
             .build()
         return MediaItem.Builder()
             .setMediaId(song.id)
-            .setUri(repository.getStreamUrl(song.id))
+            .setUri(streamUrl)
             .setMediaMetadata(metadata)
             .build()
     }
@@ -1003,10 +1077,7 @@ class PlayerManager @Inject constructor(
         cancelCrossfade()
         retryJob?.cancel()
         isRecovering = false
-        consecutiveErrors = 0
-        samePositionErrorCount = 0
-        lastErrorPosition = -1L
-        lastErrorSongId = null
+        stallRecoveryAttempts = 0
         resetStallDetection()
         scrobbled50SongId = null
         scrobbledEndedSongId = null
@@ -1046,43 +1117,19 @@ class PlayerManager @Inject constructor(
             startIndex.coerceIn(0, queueToPlay.size - 1)
         }
 
-        // FIX: createMediaItem делает Uri.parse + getCoverArtUrl на Main -> фриз 100ms+ для 50 треков
-        // Было: map на Main потоке
-        // Стало: создаем fallback items мгновенно на Main, а полные с artwork в IO и обновляем потом
         try {
-            // Быстрый fallback без artwork чтобы начать играть мгновенно <16ms
-            val quickItems = queueToPlay.map { song ->
-                MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
+            val mediaItems = queueToPlay.map { song ->
+                try { createMediaItem(song) } catch (_: Exception) {
+                    MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
+                }
             }
-            player.setMediaItems(quickItems, actualStartIndex, 0)
+            userWantsPlayback = true
+            stallRecoveryAttempts = 0
+            player.setMediaItems(mediaItems, actualStartIndex, 0)
             player.prepare()
             player.play()
-            // Догружаем artwork в фоне чтобы не фризить
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val fullItems = queueToPlay.map { song ->
-                        try { createMediaItem(song) } catch (_: Exception) {
-                            MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        try {
-                            val currentPos = player.currentPosition
-                            val currentIdx = player.currentMediaItemIndex
-                            if (currentIdx >= 0) {
-                                // Обновляем метаданные без сброса позиции
-                                for (i in fullItems.indices) {
-                                    if (i < player.mediaItemCount) {
-                                        // Media3 не позволяет обновить метаданные одного item без пересоздания,
-                                        // поэтому оставляем как есть - artwork подтянется через MediaSession bitmapLoader
-                                    }
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-                } catch (_: Exception) {}
-            }
         } catch (e: Exception) {
+            // Fallback без метаданных если крашится из-за artwork
             try {
                 val fallbackItems = queueToPlay.map { song ->
                     MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
@@ -1156,9 +1203,11 @@ class PlayerManager @Inject constructor(
         try {
             val p = getPlayer()
             if (p.isPlaying) {
+                userWantsPlayback = false
                 p.pause()
                 crossfadePlayer?.pause()
             } else {
+                userWantsPlayback = true
                 if (p.playbackState == Player.STATE_IDLE) {
                     try { p.prepare() } catch (_: Exception) {}
                 }
@@ -1245,55 +1294,15 @@ class PlayerManager @Inject constructor(
     }
 
     fun addSongsToQueue(songs: List<Song>) {
-        // FIX: было N раз addMediaItem + update state -> N рекомпозиций + N setCustomLayout -> фриз
-        // Стало: батч добавление 1 раз
-        // FIX: Tempus number_tracks_keep_in_queue - лимит очереди 200 чтобы не лагало
         try {
-            if (songs.isEmpty()) return
-            val currentQueue = _playerState.value.queue.toMutableList()
-            // Tempus-style: если очередь >200, удаляем старые треки до текущего индекса кроме 10 предыдущих
-            if (currentQueue.size > 200) {
-                val currentIdx = _playerState.value.currentIndex
-                val keepFrom = (currentIdx - 10).coerceAtLeast(0)
-                val toRemove = keepFrom
-                if (toRemove > 0) {
-                    currentQueue.subList(0, toRemove).clear()
-                    synchronized(originalQueue) {
-                        if (originalQueue.size > toRemove) {
-                            originalQueue.subList(0, toRemove).clear()
-                        }
-                    }
-                    try {
-                        val player = getPlayer()
-                        if (toRemove <= player.mediaItemCount) {
-                            player.removeMediaItems(0, toRemove)
-                            _playerState.update { it.copy(currentIndex = (currentIdx - toRemove).coerceAtLeast(0)) }
-                        }
-                    } catch (_: Exception) {}
-                }
+            songs.forEach { song ->
+                val currentQueue = _playerState.value.queue.toMutableList()
+                currentQueue.add(song)
+                synchronized(originalQueue) { originalQueue.add(song) }
+                getPlayer().addMediaItem(createMediaItem(song))
+                _playerState.update { it.copy(queue = currentQueue) }
             }
-            currentQueue.addAll(songs)
-            synchronized(originalQueue) { originalQueue.addAll(songs) }
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val mediaItems = songs.map { song ->
-                        try { createMediaItem(song) } catch (_: Exception) {
-                            MediaItem.Builder().setMediaId(song.id).setUri(repository.getStreamUrl(song.id)).build()
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        try {
-                            getPlayer().addMediaItems(mediaItems)
-                            _playerState.update { it.copy(queue = currentQueue) }
-                            saveQueueToServerDebounced()
-                        } catch (_: Exception) {}
-                    }
-                } catch (_: Exception) {
-                    withContext(Dispatchers.Main) {
-                        songs.forEach { addToQueue(it) }
-                    }
-                }
-            }
+            saveQueueToServerDebounced()
         } catch (_: Exception) {
             songs.forEach { addToQueue(it) }
         }
@@ -1414,11 +1423,15 @@ class PlayerManager @Inject constructor(
                                 delay(200)
                             }
                             try {
+                                userWantsPlayback = false
                                 player.pause()
                                 player.volume = startVolume
                             } catch (_: Exception) {}
                         } else {
-                            try { getPlayer().pause() } catch (_: Exception) {}
+                            try {
+                                userWantsPlayback = false
+                                getPlayer().pause()
+                            } catch (_: Exception) {}
                         }
                     } catch (_: Exception) {}
                     _sleepTimerState.value = SleepTimerState.Off

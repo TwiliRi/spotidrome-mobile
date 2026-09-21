@@ -1,16 +1,20 @@
 package com.sonicspot.player.data.api
 
+import android.content.Context
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import com.sonicspot.player.BuildConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
+import okhttp3.Cache
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
@@ -27,16 +31,34 @@ object NetworkModule {
         coerceInputValues = true
     }
 
+    /**
+     * Дисковый кэш ответов API. Без него каждый вход в экран — полный круг до сервера:
+     * Navidrome не отдаёт заголовков кэширования, поэтому OkHttp складывает ответ только если
+     * мы сами допишем Cache-Control (этим занимается ApiCacheInterceptor).
+     *
+     * 50 МБ рассчитаны на каталог целиком: JSON альбомов и артистов занимает единицы мегабайт,
+     * основной объём — обложки. При нехватке места OkHttp сам вытеснит старое по LRU.
+     */
+    @Provides
+    @Singleton
+    fun provideApiCache(@ApplicationContext context: Context): Cache =
+        Cache(File(context.cacheDir, "http_api"), 50L * 1024 * 1024)
+
     @Provides
     @Singleton
     fun provideOkHttp(
-        authInterceptor: AuthInterceptor
+        authInterceptor: AuthInterceptor,
+        apiCache: Cache
     ): OkHttpClient {
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
             })
+            // Сетевой перехватчик, а не обычный: он должен дописать Cache-Control ДО того,
+            // как ответ попадёт в кэш OkHttp. Обычный перехватчик выполнился бы уже после кэша.
+            .addNetworkInterceptor(ApiCacheInterceptor())
+            .cache(apiCache)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)

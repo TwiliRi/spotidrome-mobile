@@ -34,7 +34,11 @@ data class LibraryUiState(
     val pinnedIds: Set<String> = emptySet(),
     val pinnedAlbumIds: Set<String> = emptySet(),
     val currentUsername: String = "",
-    val visibleAlbumCount: Int = 20,
+    // Альбомы подгружаются страницами с сервера, поэтому счётчик «сколько показать» им больше
+    // не нужен — показывается всё, что уже загружено. Артисты и избранное приходят одним
+    // списком, для них обрезка на клиенте остаётся.
+    val albumsEndReached: Boolean = false,
+    val isLoadingMoreAlbums: Boolean = false,
     val visibleArtistCount: Int = 20,
     val visibleStarredCount: Int = 20,
     val musicFolders: List<MusicFolder> = emptyList(),
@@ -45,11 +49,11 @@ data class LibraryUiState(
     val privatePlaylists: List<Playlist> get() = playlists.filter { !it.public && !pinnedIds.contains(it.id) && it.name != DislikedRepository.EXCLUDED_PLAYLIST_NAME }
     val excludedPlaylist: Playlist? get() = playlists.find { it.name == DislikedRepository.EXCLUDED_PLAYLIST_NAME }
 
-    val visibleAlbums get() = albums.take(visibleAlbumCount)
+    val visibleAlbums get() = albums
     val visibleArtists get() = artists.take(visibleArtistCount)
     val visibleStarred get() = starredSongs.take(visibleStarredCount)
 
-    val hasMoreAlbums get() = albums.size > visibleAlbumCount
+    val hasMoreAlbums get() = !albumsEndReached
     val hasMoreArtists get() = artists.size > visibleArtistCount
     val hasMoreStarred get() = starredSongs.size > visibleStarredCount
 
@@ -113,34 +117,55 @@ class LibraryViewModel @Inject constructor(
         val folders = try { repository.getMusicFolders().getOrDefault(emptyList()) } catch (_: Exception) { emptyList() }
         val selectedFolderId = try { repository.getSelectedMusicFolderId() } catch (_: Exception) { null }
 
-        val artistsDef = viewModelScope.async { repository.getArtists() }
-        val albumsDef = viewModelScope.async { repository.getAlbums("alphabeticalByName", 100) }
-        val playlistsDef = viewModelScope.async { repository.getPlaylists() }
-        val starredDef = viewModelScope.async { repository.getStarred() }
+        // Прогрессивная отрисовка. Раньше четыре запроса запускались параллельно, но состояние
+        // обновлялось один раз — после await() всех четырёх. Экран therefore ждал самый
+        // медленный ответ: даже если альбомы пришли за 300 мс, а избранное тянется 3 с,
+        // пользователь три секунды смотрел на пустоту во всех вкладках.
+        // Теперь каждая часть обновляет состояние сама, по мере готовности.
+        var pending = 4
+        fun sectionDone() {
+            if (--pending == 0) {
+                _uiState.value = _uiState.value.copy(isLoading = false, isRefreshing = false)
+            }
+        }
 
-        val artists = artistsDef.await().getOrDefault(emptyList())
-        val albums = albumsDef.await().getOrDefault(emptyList())
-        val playlists = playlistsDef.await().getOrDefault(emptyList())
-        val starred = starredDef.await().getOrNull()
-
-        try {
-            dislikedRepository.cleanupDuplicateExcludedPlaylists()
-            dislikedRepository.syncFromServer()
-        } catch (_: Exception) {}
+        resetAlbumPaging()
+        viewModelScope.launch {
+            val list = repository.getArtists(forceRefresh = isRefresh).getOrDefault(emptyList())
+            _uiState.value = _uiState.value.copy(artists = list)
+            sectionDone()
+        }
+        viewModelScope.launch {
+            val page = repository.getAlbums("alphabeticalByName", ALBUM_PAGE_SIZE, offset = 0, forceRefresh = isRefresh)
+                .getOrDefault(emptyList())
+            albumOffset = page.size
+            albumsEndReached = page.size < ALBUM_PAGE_SIZE
+            _uiState.value = _uiState.value.copy(albums = page, albumsEndReached = albumsEndReached)
+            sectionDone()
+        }
+        viewModelScope.launch {
+            val list = repository.getPlaylists(forceRefresh = isRefresh).getOrDefault(emptyList())
+            _uiState.value = _uiState.value.copy(playlists = list)
+            sectionDone()
+        }
+        viewModelScope.launch {
+            val starred = repository.getStarred(forceRefresh = isRefresh).getOrNull()
+            _uiState.value = _uiState.value.copy(starredSongs = starred?.song ?: emptyList())
+            sectionDone()
+        }
 
         _uiState.value = _uiState.value.copy(
-            isLoading = false,
-            isRefreshing = false,
-            artists = artists,
-            albums = albums,
-            playlists = playlists,
-            starredSongs = starred?.song ?: emptyList(),
             pinnedIds = pinnedIds.value,
             pinnedAlbumIds = pinnedAlbumIds.value,
             currentUsername = currentUsername,
             musicFolders = folders,
             selectedFolderId = selectedFolderId
         )
+
+        try {
+            dislikedRepository.cleanupDuplicateExcludedPlaylists()
+            dislikedRepository.syncFromServer()
+        } catch (_: Exception) {}
     }
 
     fun refresh() {
@@ -157,11 +182,46 @@ class LibraryViewModel @Inject constructor(
 
     companion object {
         const val PAGE_SIZE = 20
+        /** Сколько альбомов просим у сервера за раз. */
+        const val ALBUM_PAGE_SIZE = 50
+    }
+
+    // ===== Альбомы: настоящая постраничная загрузка =====
+    // Было: getAlbums(size = 100) тянул сотню альбомов сразу и показывал из них 20. То есть
+    // платили за 100 — трафик, разбор JSON, обложки, — а видели 20, а остальные 80 догружались
+    // по кнопке уже бесплатно, но всё равно уже были скачаны.
+    // Стало: первая страница при открытии, дальше — по кнопке с реальным offset.
+    private var albumOffset = 0
+    private var albumsEndReached = false
+    private var albumsLoading = false
+
+    private fun resetAlbumPaging() {
+        albumOffset = 0
+        albumsEndReached = false
+        albumsLoading = false
     }
 
     fun loadMoreAlbums() {
-        val cur = _uiState.value
-        if (cur.hasMoreAlbums) _uiState.value = cur.copy(visibleAlbumCount = (cur.visibleAlbumCount + PAGE_SIZE).coerceAtMost(cur.albums.size))
+        if (albumsLoading || albumsEndReached) return
+        albumsLoading = true
+        _uiState.value = _uiState.value.copy(isLoadingMoreAlbums = true)
+        viewModelScope.launch {
+            val page = repository
+                .getAlbums("alphabeticalByName", ALBUM_PAGE_SIZE, offset = albumOffset)
+                .getOrDefault(emptyList())
+            albumOffset += page.size
+            // Сервер вернул меньше, чем просили — больше страниц нет.
+            if (page.size < ALBUM_PAGE_SIZE) albumsEndReached = true
+            val merged = _uiState.value.albums + page
+            // На всякий случай убираем дубликаты: сервер мог сдвинуть выдачу между страницами.
+            val distinct = merged.distinctBy { it.id }
+            _uiState.value = _uiState.value.copy(
+                albums = distinct,
+                albumsEndReached = albumsEndReached,
+                isLoadingMoreAlbums = false
+            )
+            albumsLoading = false
+        }
     }
 
     fun loadMoreArtists() {

@@ -2,6 +2,7 @@ package com.sonicspot.player.data.api
 
 import com.sonicspot.player.data.model.SubsonicResponse
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.Query
 
 interface NavidromeApi {
@@ -10,25 +11,29 @@ interface NavidromeApi {
     suspend fun ping(): SubsonicResponse
 
     @GET("rest/getMusicFolders.view")
-    suspend fun getMusicFolders(): SubsonicResponse
+    suspend fun getMusicFolders(
+        @Header("Cache-Control") cacheControl: String? = null
+    ): SubsonicResponse
 
     @GET("rest/getArtists.view")
     suspend fun getArtists(
-        @Query("musicFolderId") musicFolderId: Int? = null
+        @Query("musicFolderId") musicFolderId: Int? = null,
+        @Header("Cache-Control") cacheControl: String? = null
     ): SubsonicResponse
 
     @GET("rest/getArtist.view")
-    suspend fun getArtist(@Query("id") id: String): SubsonicResponse
+    suspend fun getArtist(@Query("id") id: String, @Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 
     @GET("rest/getAlbum.view")
-    suspend fun getAlbum(@Query("id") id: String): SubsonicResponse
+    suspend fun getAlbum(@Query("id") id: String, @Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 
     @GET("rest/getAlbumList2.view")
     suspend fun getAlbumList2(
         @Query("type") type: String,
         @Query("size") size: Int = 50,
         @Query("offset") offset: Int = 0,
-        @Query("musicFolderId") musicFolderId: Int? = null
+        @Query("musicFolderId") musicFolderId: Int? = null,
+        @Header("Cache-Control") cacheControl: String? = null
     ): SubsonicResponse
 
     @GET("rest/search3.view")
@@ -37,14 +42,15 @@ interface NavidromeApi {
         @Query("artistCount") artistCount: Int = 20,
         @Query("albumCount") albumCount: Int = 20,
         @Query("songCount") songCount: Int = 50,
-        @Query("musicFolderId") musicFolderId: Int? = null
+        @Query("musicFolderId") musicFolderId: Int? = null,
+        @Header("Cache-Control") cacheControl: String? = null
     ): SubsonicResponse
 
     @GET("rest/getPlaylists.view")
-    suspend fun getPlaylists(): SubsonicResponse
+    suspend fun getPlaylists(@Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 
     @GET("rest/getPlaylist.view")
-    suspend fun getPlaylist(@Query("id") id: String): SubsonicResponse
+    suspend fun getPlaylist(@Query("id") id: String, @Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 
     @GET("rest/createPlaylist.view")
     suspend fun createPlaylist(
@@ -73,7 +79,7 @@ interface NavidromeApi {
     ): SubsonicResponse
 
     @GET("rest/getStarred.view")
-    suspend fun getStarred(): SubsonicResponse
+    suspend fun getStarred(@Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 
     @GET("rest/star.view")
     suspend fun star(@Query("id") id: String): SubsonicResponse

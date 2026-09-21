@@ -308,8 +308,15 @@ fun LibraryScreen(
                     if (state.hasMoreAlbums) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                Button(onClick = { viewModel.loadMoreAlbums() }, colors = ButtonDefaults.buttonColors(containerColor = SpotifyColors.Gray)) {
-                                    Text("Загрузить ещё • ${state.visibleAlbumCount} из ${state.albums.size}")
+                                Button(
+                                    onClick = { viewModel.loadMoreAlbums() },
+                                    enabled = !state.isLoadingMoreAlbums,
+                                    colors = ButtonDefaults.buttonColors(containerColor = SpotifyColors.Gray)
+                                ) {
+                                    Text(
+                                        if (state.isLoadingMoreAlbums) "Загружаю…"
+                                        else "Загрузить ещё • показано ${state.albums.size}"
+                                    )
                                 }
                             }
                         }

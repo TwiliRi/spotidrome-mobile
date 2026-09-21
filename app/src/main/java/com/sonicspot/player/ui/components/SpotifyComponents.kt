@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.sonicspot.player.util.CoverArt
 import coil.request.ImageRequest
 import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.Artist
@@ -50,28 +51,42 @@ fun CoverArtImage(
     sizePx: Int = 300
 ) {
     val context = LocalContext.current
-    val stableKey = remember(url, sizePx) {
+    // Ключ ДИСКА — по корзине размера (CoverArt.LIST / LARGE), без sizePx. Раньше в ключ входил
+    // sizePx, а в UI их восемь, — и одна обложка скачивалась и хранилась до восьми раз. Сейчас
+    // с сервера приходит один из двух размеров, а на диск обложка ложится один раз на корзину.
+    val diskKey = remember(url) {
         if (url == null) null else {
             try {
                 val idParam = url.substringAfter("id=").substringBefore("&").ifEmpty { url.hashCode().toString() }
-                "${idParam}-${sizePx}"
+                // Размер берём из самого URL, где он уже квантован в MusicRepository, а не из
+                // sizePx: ключ обязан в точности соответствовать тому, что реально лежит на
+                // диске. Иначе корзина, посчитанная по sizePx, могла бы не совпасть с размером
+                // пришедшей картинки, и крупная обложка оказалась бы записана под чужим ключом.
+                val sizeParam = url.substringAfter("size=", "").substringBefore("&")
+                    .ifEmpty { CoverArt.LIST.toString() }
+                "$idParam-$sizeParam"
             } catch (_: Exception) {
-                "${url}-${sizePx}"
+                "${url}-${CoverArt.LIST}"
             }
         }
     }
-    val imageRequest = remember(url, sizePx, stableKey) {
+    // Ключ ПАМЯТИ — с учётом sizePx: Coil декодирует картинку под конкретный отображаемый
+    // размер, и 56dp-превью не должно вытеснять из памяти 152dp-карточку альбома.
+    val memoryKey = remember(diskKey, sizePx) { diskKey?.let { "$it@$sizePx" } }
+    val imageRequest = remember(url, sizePx, diskKey, memoryKey) {
         if (url == null) null else {
             ImageRequest.Builder(context)
                 .data(url)
+                // Декодировать под отображаемый размер: 300px из сети не должны ложиться
+                // в память как 300px там, где видно только 56dp.
                 .size(sizePx)
                 .crossfade(false)
-                .allowHardware(false)
                 .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
-                .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-                .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                .memoryCacheKey(stableKey)
-                .diskCacheKey(stableKey)
+                // allowHardware здесь не задаём: при заданном bitmapConfig Coil всё равно
+                // отключает аппаратные битмапы, так что прежний явный запрет был ни на что
+                // не влияющим шумом, вводящим в заблуждение.
+                .memoryCacheKey(memoryKey)
+                .diskCacheKey(diskKey)
                 .build()
         }
     }
@@ -1077,12 +1092,10 @@ fun SleepTimerButton(
         formatSleepRemaining(sleepState.remainingMillis)
     } else null
 
-    val backgroundBrush = remember(isActive) {
-        if (isActive) {
-            Brush.linearGradient(colors = listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
-        } else {
-            Brush.linearGradient(colors = listOf(SpotifyColors.Gray, SpotifyColors.GrayLighter.copy(alpha = 0.6f)))
-        }
+    val backgroundBrush = if (isActive) {
+        Brush.linearGradient(colors = listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
+    } else {
+        Brush.linearGradient(colors = listOf(SpotifyColors.Gray, SpotifyColors.GrayLighter.copy(alpha = 0.6f)))
     }
 
     Box(
@@ -1150,13 +1163,12 @@ fun SleepTimerCompactIconButton(
     modifier: Modifier = Modifier
 ) {
     val isActive = sleepState is com.sonicspot.player.player.SleepTimerState.Active
-    val bgBrush = remember(isActive) {
-        if (isActive) Brush.linearGradient(listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
-        else Brush.linearGradient(listOf(SpotifyColors.Gray, SpotifyColors.Gray))
-    }
     Box(
         modifier = modifier.size(40.dp).clip(CircleShape)
-            .background(bgBrush)
+            .background(
+                if (isActive) Brush.linearGradient(listOf(Color(0xFF1E3264), Color(0xFF8D67AB)))
+                else Brush.linearGradient(listOf(SpotifyColors.Gray, SpotifyColors.Gray))
+            )
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
