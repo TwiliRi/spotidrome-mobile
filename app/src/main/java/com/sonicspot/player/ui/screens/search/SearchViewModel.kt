@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.Album
+import com.sonicspot.player.data.model.Genre
 import com.sonicspot.player.data.model.Artist
 import com.sonicspot.player.data.model.SearchHistoryEntry
 import com.sonicspot.player.data.model.Song
@@ -60,6 +61,14 @@ class SearchViewModel @Inject constructor(
     val popularSearches = searchHistoryRepository.popularFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val groupedHistory = searchHistory.map { searchHistoryRepository.groupedByTime(it) }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    // Треки и исполнители из поиска, которые реально слушали (>= 1 запущенный трек)
+    val recentListens = searchHistoryRepository.listensFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Все жанры сервера — для обзора на странице поиска
+    private val _genres = MutableStateFlow<List<Genre>>(emptyList())
+    val genres: StateFlow<List<Genre>> = _genres.asStateFlow()
+
     companion object {
         const val PAGE_SIZE = 20
     }
@@ -76,6 +85,15 @@ class SearchViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try { starredRepository.syncFromServer() } catch (_: Exception) {}
+        }
+        viewModelScope.launch {
+            try {
+                repository.getGenres().onSuccess { list ->
+                    _genres.value = list
+                        .filter { it.value.isNotBlank() }
+                        .distinctBy { it.value.trim().lowercase() }
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -149,7 +167,31 @@ class SearchViewModel @Inject constructor(
     }
 
     fun getCoverUrl(id: String?, size: Int = 300): String? = repository.getCoverArtUrl(id, size)
-    fun playSongs(songs: List<Song>, index: Int) = playerManager.playSongs(songs, index)
+    fun playSongs(songs: List<Song>, index: Int) {
+        // Трек, запущенный прямо из результатов поиска, попадает в «Недавно слушали»
+        songs.getOrNull(index)?.let { song ->
+            viewModelScope.launch { searchHistoryRepository.recordSongPlayedFromSearch(song) }
+        }
+        playerManager.playSongs(songs, index)
+    }
+
+    /** Переход к исполнителю из результатов поиска: запомним, подтвердим прослушиванием его трека */
+    fun onArtistOpenedFromSearch(artist: Artist) {
+        searchHistoryRepository.markArtistOpenedFromSearch(artist.id, artist.name, artist.coverArt)
+    }
+
+    /** Перезагрузка жанров (например, после обновления библиотеки на сервере) */
+    fun refreshGenres() {
+        viewModelScope.launch {
+            try {
+                repository.getGenres(forceRefresh = true).onSuccess { list ->
+                    _genres.value = list
+                        .filter { it.value.isNotBlank() }
+                        .distinctBy { it.value.trim().lowercase() }
+                }
+            } catch (_: Exception) {}
+        }
+    }
     fun toggleDislike(songId: String) { viewModelScope.launch { dislikedRepository.toggleDislike(songId) } }
     fun toggleLike(songId: String) { viewModelScope.launch { starredRepository.toggleLike(songId) } }
 }

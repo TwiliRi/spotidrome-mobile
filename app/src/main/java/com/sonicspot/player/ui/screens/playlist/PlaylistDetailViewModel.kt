@@ -56,7 +56,7 @@ class PlaylistDetailViewModel @Inject constructor(
 ) : ViewModel() {
 
     val downloadedMap = downloadStore.downloaded
-    val downloadingIds = downloadStore.inProgress
+    val activeDownloads = downloadStore.activeDownloads
 
     private val _uiState = MutableStateFlow(PlaylistDetailUiState())
     val uiState: StateFlow<PlaylistDetailUiState> = _uiState.asStateFlow()
@@ -155,14 +155,16 @@ class PlaylistDetailViewModel @Inject constructor(
         return "${pl.name}\n$url"
     }
 
-    /** Скачивает все треки плейлиста (уже скачанные пропускаются — идемпотентно). */
+    /** Скачивает все треки плейлиста в фоне — продолжается даже после ухода с экрана. */
     fun downloadAll() {
         val songs = _uiState.value.playlist?.entry ?: return
-        viewModelScope.launch {
-            songs.forEach { song ->
-                try { downloadStore.download(song) } catch (_: Exception) {}
-            }
-        }
+        downloadStore.downloadAll(songs)
+    }
+
+    /** Отменяет скачивание треков этого плейлиста: очередь + активные загрузки. */
+    fun cancelDownloads() {
+        val ids = _uiState.value.playlist?.entry?.map { it.id }?.toSet() ?: return
+        downloadStore.cancelDownloads(ids)
     }
 
     /** Удаляет скачанное этого плейлиста — файлы стираются, память освобождается. */

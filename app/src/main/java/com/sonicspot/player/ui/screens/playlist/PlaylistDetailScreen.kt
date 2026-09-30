@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.components.DownloadProgressButton
 import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.AddToPlaylistHost
@@ -44,7 +45,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
     val likedIds by viewModel.likedIds.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     val downloadedMap by viewModel.downloadedMap.collectAsState()
-    val downloadingIds by viewModel.downloadingIds.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var showMoreDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -203,14 +204,20 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                                 val downloadedInPlaylist = playlist.entry.count { downloadedMap.containsKey(it.id) }
                                 val allDownloaded = playlist.entry.isNotEmpty() && downloadedInPlaylist == playlist.entry.size
-                                Box(modifier = Modifier.size(28.dp).clickable { viewModel.downloadAll() }, contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        if (allDownloaded) Icons.Default.DownloadDone else Icons.Default.DownloadForOffline,
-                                        if (allDownloaded) "Всё скачано" else "Скачать треки",
-                                        tint = if (allDownloaded || downloadingIds.isNotEmpty()) SpotifyColors.Green else SpotifyColors.LightGray,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
+                                // Активные загрузки треков этого плейлиста: кольцо прогресса вокруг кнопки
+                                val activeInPlaylist = activeDownloads.values.filter { playlist.entry.any { e -> e.id == it.song.id } }
+                                val playlistProgress = if (activeInPlaylist.isEmpty() || playlist.entry.isEmpty()) null
+                                else if (activeInPlaylist.any { it.progress == null }) null
+                                else (downloadedInPlaylist + activeInPlaylist.sumOf { (it.progress ?: 0f).toDouble() }) / playlist.entry.size
+                                DownloadProgressButton(
+                                    isDownloading = activeInPlaylist.isNotEmpty(),
+                                    progress = playlistProgress?.toFloat()?.coerceIn(0f, 1f),
+                                    isDownloaded = allDownloaded,
+                                    onDownload = { viewModel.downloadAll() },
+                                    onCancel = { viewModel.cancelDownloads() },
+                                    size = 28.dp,
+                                    iconSize = 24.dp
+                                )
                                 Box(modifier = Modifier.size(28.dp).clickable {
                                     val text = viewModel.shareText()
                                     if (text.isNotEmpty()) {
@@ -242,25 +249,14 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
             }
 
             item(key = "subheader", contentType = "subheader") {
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Search, null, tint = SpotifyColors.White, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Показано ${state.visibleSongs.size} из ${playlist.songCount}", style = MaterialTheme.typography.bodySmall.copy(color = SpotifyColors.White, fontWeight = FontWeight.Bold, fontSize = 12.sp))
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (state.hasMore) Text("Ещё ${state.remainingCount}", style = MaterialTheme.typography.bodySmall.copy(color = SpotifyColors.Green, fontSize = 11.sp))
-                        else Text("Все треки", style = MaterialTheme.typography.bodySmall.copy(color = SpotifyColors.LightGray, fontSize = 11.sp))
-                        Icon(Icons.Default.Sort, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(16.dp))
-                    }
-                }
+                // Счётчики «показано X из Y» убраны: треки подгружаются автоматически по мере скролла
                 HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.2f), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
                 Spacer(Modifier.height(4.dp))
             }
 
             itemsIndexed(state.visibleSongs, key = { _, song -> song.id }, contentType = { _, _ -> "song" }) { index, song ->
                 val isPlaying = currentSongId?.id == song.id
-                val isLiked = likedIds.contains(song.id) || song.isStarred
+                val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
                 val isDisliked = dislikedIds.contains(song.id)
                 val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                 SongRowModern(
@@ -286,7 +282,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
                     Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = SpotifyColors.Green)
-                            Text("Загружаем ещё ${state.remainingCount.coerceAtMost(20)} треков...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
+                            Text("Загружаем ещё треки...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
                         }
                     }
                 }
@@ -295,17 +291,11 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
             item(key = "footer", contentType = "footer") {
                 Spacer(Modifier.height(24.dp))
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    Text(text = "${playlist.songCount} треков • ${formatDuration(playlist.duration)}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray)
-                    Spacer(Modifier.height(6.dp))
                     Text(
                         text = if (isExcludedPlaylist) "Все треки из этого плейлиста исключены из рекомендаций и плеера" else "Плейлист создан в Navidrome",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                         color = SpotifyColors.MediumGray
                     )
-                    if (!state.hasMore) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(text = "Показаны все ${playlist.songCount} треков", style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp), color = SpotifyColors.MediumGray)
-                    }
                 }
             }
         }
@@ -427,7 +417,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
         SongOptionsSheet(
             song = songMenu,
             coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
-            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isLiked = songMenu?.let { (likedIds.contains(it.id) || it.isStarred) && !dislikedIds.contains(it.id) } == true,
             isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
             onDismiss = { songMenu = null },
             onAddToPlaylist = {

@@ -11,7 +11,8 @@ import javax.inject.Singleton
 @Singleton
 class StarredRepository @Inject constructor(
     private val musicRepository: MusicRepository,
-    private val prefs: PreferencesManager
+    private val prefs: PreferencesManager,
+    private val dislikedRepository: DislikedRepository
 ) {
     val likedIdsFlow: Flow<Set<String>> = prefs.likedIdsFlow
 
@@ -48,6 +49,13 @@ class StarredRepository @Inject constructor(
 
     suspend fun addToLiked(songId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            // ВЗАИМОИСКЛЮЧЕНИЕ: лайк и дизлайк не могут стоять одновременно.
+            // Ставим лайк — снимаем дизлайк (и локально, и на сервере).
+            try {
+                if (dislikedRepository.isDisliked(songId)) {
+                    dislikedRepository.removeFromExcluded(songId)
+                }
+            } catch (_: Exception) {}
             prefs.addLikedId(songId)
             musicRepository.star(songId)
             Result.success(true)

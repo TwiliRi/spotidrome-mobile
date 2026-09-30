@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.local.CacheManager
 import com.sonicspot.player.data.local.CacheType
+import com.sonicspot.player.data.local.DownloadStore
+import com.sonicspot.player.data.local.MemorySection
 import com.sonicspot.player.data.repository.LyricsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +17,8 @@ import javax.inject.Inject
 @HiltViewModel
 class MemoryViewModel @Inject constructor(
     private val cacheManager: CacheManager,
-    private val lyricsRepository: LyricsRepository
+    private val lyricsRepository: LyricsRepository,
+    private val downloadStore: DownloadStore
 ) : ViewModel() {
 
     private val _isLoading = MutableStateFlow(true)
@@ -39,14 +42,28 @@ class MemoryViewModel @Inject constructor(
     fun clearCache(type: CacheType) {
         viewModelScope.launch {
             _isLoading.value = true
-            cacheManager.clearCache(type)
-            if (type == CacheType.LYRICS || type == CacheType.ALL) {
-                lyricsRepository.clearMemoryCache()
+            if (type == CacheType.DOWNLOADS) {
+                // Скачанная музыка принадлежит DownloadStore — чистим через него
+                val ids = downloadStore.downloaded.value.keys.toList()
+                downloadStore.deleteAll(ids)
+                cacheManager.refreshCacheInfo()
+            } else {
+                cacheManager.clearCache(type)
+                if (type == CacheType.LYRICS || type == CacheType.ALL) {
+                    lyricsRepository.clearMemoryCache()
+                }
             }
             _isLoading.value = false
         }
     }
 
     fun formatSize(bytes: Long) = cacheManager.formatSize(bytes)
+
+    /** Всё, что занимает место: данные + кэш. */
     fun formatTotal() = cacheManager.formatSize(totalSize)
+
+    /** Только кэш (для кнопки «Очистить всё» — скачивания и настройки не трогаем). */
+    fun formatCacheTotal(): String = cacheManager.formatSize(
+        cacheItems.value.filter { it.section == MemorySection.CACHE }.sumOf { it.sizeBytes }
+    )
 }

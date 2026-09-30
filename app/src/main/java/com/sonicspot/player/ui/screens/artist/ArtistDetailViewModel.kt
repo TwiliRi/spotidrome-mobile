@@ -3,12 +3,14 @@ package com.sonicspot.player.ui.screens.artist
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicspot.player.data.model.Album
 import com.sonicspot.player.data.model.ArtistDetail
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.data.repository.StarredRepository
 import com.sonicspot.player.player.PlayerManager
+import com.sonicspot.player.util.buildArtistTokens
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,12 +20,31 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * Дискография артиста, разбитая по типам релизов:
+ * альбомы, EP, синглы и «Участие» (appears on — релизы других исполнителей,
+ * где артист отмечен только в отдельных треках или как соисполнитель).
+ */
+@Immutable
+data class ArtistDiscography(
+    val albums: List<Album> = emptyList(),
+    val eps: List<Album> = emptyList(),
+    val singles: List<Album> = emptyList(),
+    val appearsOn: List<Album> = emptyList()
+) {
+    val mainReleases: List<Album> get() = albums + eps + singles
+    val isEmpty: Boolean get() = albums.isEmpty() && eps.isEmpty() && singles.isEmpty() && appearsOn.isEmpty()
+}
+
 @Immutable
 data class ArtistDetailUiState(
     val isLoading: Boolean = true,
     val artist: ArtistDetail? = null,
     val topSongs: List<Song> = emptyList(),
     val isTopSongsLoading: Boolean = false,
+    val discography: ArtistDiscography = ArtistDiscography(),
+    // Понравившиеся треки этого артиста (для блока перед популярными)
+    val starredOfArtist: List<Song> = emptyList(),
     val error: String? = null
 )
 
@@ -45,13 +66,42 @@ class ArtistDetailViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = true)
             val result = repository.getArtist(id)
             result.onSuccess { artist ->
-                _uiState.value = _uiState.value.copy(isLoading = false, artist = artist)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    artist = artist,
+                    discography = DiscographyClassifier.group(artist)
+                )
                 // Load top songs in parallel
                 loadTopSongs(artist.name)
+                // Load liked songs of this artist in parallel
+                loadStarredSongs(artist)
             }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(isLoading = false, error = e.message)
             }
         }
+    }
+
+    /** Понравившиеся треки артиста: берём из starred и оставляем только его треки. */
+    private fun loadStarredSongs(artist: ArtistDetail) {
+        viewModelScope.launch {
+            try {
+                val starred = repository.getStarred().getOrNull() ?: return@launch
+                val songs = starred.song.filter { isArtistSong(it, artist) }
+                _uiState.value = _uiState.value.copy(starredOfArtist = songs)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Трек принадлежит артисту, если совпадает artistId, отображаемое имя или один из токенов строки исполнителей. */
+    private fun isArtistSong(song: Song, artist: ArtistDetail): Boolean {
+        if (song.artistId != null && song.artistId == artist.id) return true
+        val name = artist.name.trim()
+        if (name.isEmpty()) return false
+        song.artist?.let { display ->
+            if (display.trim().equals(name, ignoreCase = true)) return true
+            if (buildArtistTokens(song).any { it.name.trim().equals(name, ignoreCase = true) }) return true
+        }
+        return false
     }
 
     private fun loadTopSongs(artistName: String) {
@@ -103,6 +153,15 @@ class ArtistDetailViewModel @Inject constructor(
 
     fun playTopSongAt(index: Int) {
         val songs = _uiState.value.topSongs
+        if (index in songs.indices) {
+            viewModelScope.launch {
+                playerManager.playSongs(songs, startIndex = index)
+            }
+        }
+    }
+
+    /** Запустить переданный список треков с указанного индекса (блок «В понравившихся»). */
+    fun playSongsAt(songs: List<Song>, index: Int) {
         if (index in songs.indices) {
             viewModelScope.launch {
                 playerManager.playSongs(songs, startIndex = index)

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.pow
@@ -86,11 +87,21 @@ class BlackHoleScene {
         val ttl = 0.42f
     }
 
+    /** Уголёк: короткая раскалённая искра, летящая по диску к горизонту. */
+    private class Spark(
+        var angle: Float = 0f,
+        var radius: Float = 0f,
+        var ttl: Float = 0f,
+        var k: Float = 1f,
+        var size: Float = 1f
+    )
+
     /** Триггер перерисовки: читается в draw-блоке Canvas, меняется раз в кадр. */
     internal val revision = mutableIntStateOf(0)
 
     private val arts = List(ART_COUNT) { Art(it) }
     private val flashes = List(FLASH_COUNT) { Flash() }
+    private val sparks = List(SPARK_COUNT) { Spark() }
 
     private var artCursor = 0
 
@@ -227,6 +238,7 @@ class BlackHoleScene {
         roll = sin(time * 0.43f) * 0.034f + sin(time * 0.17f) * 0.022f
 
         updateArts(dt)
+        updateSparks(dt)
         updateFlashes(dt)
 
         if (phase == RollPhase.TOP || phase == RollPhase.EXPAND) {
@@ -344,6 +356,30 @@ class BlackHoleScene {
 
     private fun updateFlashes(dt: Float) {
         for (flash in flashes) if (flash.life > 0f) flash.life -= dt
+    }
+
+    /**
+     * Угольки: раскалённые искры в плоскости диска. Кружатся по Кеплеру и стягиваются
+     * к горизонту; при всасывании падают заметно быстрее. Живут недолго и возрождаются
+     * у внешнего края полосы — диск выглядит кипящим.
+     */
+    private fun updateSparks(dt: Float) {
+        if (quality < 0.5f) return
+        val inward = (0.34f - flow * 0.26f).coerceAtLeast(0.12f)
+        for (spark in sparks) {
+            if (spark.ttl <= 0f) {
+                spark.angle = Random.nextFloat() * TAU
+                spark.radius = DISK_IN + 0.3f + Random.nextFloat() * (DISK_OUT - DISK_IN - 0.9f)
+                spark.ttl = 1.1f + Random.nextFloat() * 1.7f
+                spark.k = 0.7f + Random.nextFloat() * 0.8f
+                spark.size = 0.55f + Random.nextFloat() * 0.9f
+                continue
+            }
+            spark.ttl -= dt
+            spark.angle += (1.6f / maxOf(spark.radius, 0.9f).pow(1.5f)) * dt * spark.k
+            spark.radius -= inward * dt * spark.k
+            if (spark.radius <= HORIZON * 1.05f) spark.ttl = 0f
+        }
     }
 
     // ==================== отрисовка ====================
@@ -494,9 +530,11 @@ class BlackHoleScene {
             drawArts(S, back = true)
             // ---------- диск, горизонт, линзирование ----------
             drawDisk(S, accentColor, intensity)
+            drawSparks(S)
             drawShadow(S)
             drawLensedArcs(S, accentColor, intensity)
             drawPhotonRing(S, accentColor)
+            drawJets(S, accentColor, intensity)
             // ---------- обложки перед дырой ----------
             drawArts(S, back = false)
         }
@@ -537,11 +575,25 @@ class BlackHoleScene {
             seed = seed * 1103515245 + 12345
             val rB = ((seed ushr 8) and 0xFF) / 255f
 
-            val px = rx * width
-            val py = ry * height
+            var px = rx * width
+            var py = ry * height
             // звёзды не должны пробиваться сквозь диск — гасим те, что попали в него
-            val d = (Offset(px, py) - center).getDistance() / S
+            val rel = Offset(px, py) - center
+            val d = rel.getDistance() / S
             if (d in DISK_IN..DISK_OUT) continue
+
+            // Гравитационное линзирование: у тени звёзды «разъезжаются» наружу
+            // и слегка проворачиваются по углу — чем ближе к горизонту, тем сильнее.
+            if (d < 6f) {
+                val near = (1f - d / 6f).coerceIn(0f, 1f)
+                val deflect = (S * 1.5f / maxOf(d, 1.05f)) * near * (0.8f + feed * 0.9f)
+                val ang = atan2(rel.y, rel.x) + near * near * 0.3f * (1f + feed * 0.7f)
+                val stretched = rel.getDistance() + deflect * S
+                px = center.x + cos(ang) * stretched
+                py = center.y + sin(ang) * stretched
+                // ушла за тень после смещения — не рисуем
+                if ((Offset(px, py) - center).getDistance() < S * 1.14f) continue
+            }
 
             val twinkle = 0.55f + 0.45f * sin(time * (0.4f + rB * 0.8f) + i * 1.7f)
             val radius = (0.6f + rB * 1.5f) * (S / 220f).coerceIn(0.5f, 2.2f)
@@ -629,6 +681,43 @@ class BlackHoleScene {
         }
     }
 
+    /** Угольки в плоскости диска: короткие раскалённые штрихи, стягивающиеся к горизонту. */
+    private fun DrawScope.drawSparks(S: Float) {
+        if (quality < 0.5f) return
+        val c = center
+        withTransform({
+            translate(c.x, c.y)
+            scale(1f, squash, pivot = Offset.Zero)
+        }) {
+            for (spark in sparks) {
+                if (spark.ttl <= 0f) continue
+                val r = spark.radius * S
+                val rn = (spark.radius / DISK_OUT).coerceIn(0f, 1f)
+                val fade = (spark.ttl / 1.2f).coerceIn(0f, 1f)
+                val a = (hotProfile(rn) * fade * (0.55f + feed * 0.45f)).coerceIn(0f, 0.85f)
+                if (a < 0.02f) continue
+                // хвостик отстаёт по орбите и чуть наружу — искра летит по спирали
+                val tail = 0.1f * spark.k
+                val x1 = cos(spark.angle) * r
+                val y1 = sin(spark.angle) * r
+                val x0 = cos(spark.angle - tail) * (r + spark.k * S * 0.05f)
+                val y0 = sin(spark.angle - tail) * (r + spark.k * S * 0.05f)
+                drawLine(
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color.Transparent, diskColor(rn, accent, 0.5f).copy(alpha = a)),
+                        start = Offset(x0, y0),
+                        end = Offset(x1, y1)
+                    ),
+                    start = Offset(x0, y0),
+                    end = Offset(x1, y1),
+                    strokeWidth = (1f + spark.size * 1.8f) * (S / 220f).coerceIn(0.6f, 3f),
+                    cap = StrokeCap.Round,
+                    blendMode = BlendMode.Plus
+                )
+            }
+        }
+    }
+
     private fun DrawScope.drawShadow(S: Float) {
         // Тень горизонта: чёрный круг с мягкой границей — всё, что за дырой, честно пропадает,
         // потому что обложки задней половины рисуются до этого круга
@@ -684,11 +773,36 @@ class BlackHoleScene {
         val c = center
         val boost = 1f + feed * 0.45f
         val unit = (S / 220f).coerceIn(0.4f, 3f)
+        // доплеровская асимметрия: сторона, летящая на камеру, вспыхивает ярче
+        // (как на снимке M87*) — кольцо собираем из двух дуг разной яркости
+        val ringR = S * 1.03f
+        val ringTopLeft = Offset(c.x - ringR, c.y - ringR)
+        val ringSize = Size(ringR * 2f, ringR * 2f)
+        drawArc(
+            color = Color(1f, 0.98f, 0.93f).copy(alpha = 0.95f * boost),
+            startAngle = 120f, sweepAngle = 200f, useCenter = false,
+            topLeft = ringTopLeft, size = ringSize,
+            style = Stroke(width = 2f * unit, cap = StrokeCap.Round),
+            blendMode = BlendMode.Plus
+        )
+        drawArc(
+            color = Color(1f, 0.9f, 0.8f).copy(alpha = 0.38f * boost),
+            startAngle = -80f, sweepAngle = 200f, useCenter = false,
+            topLeft = ringTopLeft, size = ringSize,
+            style = Stroke(width = 1.5f * unit, cap = StrokeCap.Round),
+            blendMode = BlendMode.Plus
+        )
+        // «горячий узел» на приближающейся стороне — самая яркая точка кольца
+        val hotAng = 135f * PI.toFloat() / 180f
+        val hotC = Offset(c.x + cos(hotAng) * ringR, c.y + sin(hotAng) * ringR)
         drawCircle(
-            color = Color(1f, 0.97f, 0.92f).copy(alpha = 0.9f * boost),
-            radius = S * 1.03f,
-            center = c,
-            style = Stroke(width = 1.6f * unit),
+            brush = Brush.radialGradient(
+                colors = listOf(Color(1f, 0.98f, 0.95f).copy(alpha = 0.7f * boost), Color.Transparent),
+                center = hotC,
+                radius = S * 0.3f
+            ),
+            radius = S * 0.3f,
+            center = hotC,
             blendMode = BlendMode.Plus
         )
         drawCircle(
@@ -714,6 +828,85 @@ class BlackHoleScene {
         )
     }
 
+    /**
+     * Релятивистские джеты: при активном всасывании вдоль оси дыры вверх и вниз
+     * бьют столбы света — широкий конус с яркой сердцевиной и дрожащими нитями.
+     */
+    private fun DrawScope.drawJets(S: Float, accentColor: Color, intensity: Float) {
+        val jf = ((feed - 0.2f) / 0.8f).coerceIn(0f, 1f)
+        if (jf <= 0.02f) return
+        val c = center
+        val len = height * 0.52f * (0.55f + 0.45f * jf)
+        for (dir in intArrayOf(1, -1)) {
+            val y0 = c.y + dir * S * 1.05f
+            val y1 = c.y + dir * (S * 1.05f + len)
+            val flicker = 0.75f + 0.25f * noise3(dir.toFloat() * 3.1f, time * 0.9f, 0.4f)
+            val wBase = S * (0.14f + 0.1f * jf)
+            val wTop = S * 0.8f
+            // широкий полупрозрачный конус
+            drawPath(
+                path = Path().apply {
+                    moveTo(c.x - wBase, y0)
+                    lineTo(c.x + wBase, y0)
+                    lineTo(c.x + wTop, y1)
+                    lineTo(c.x - wTop, y1)
+                    close()
+                },
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color(1f, 0.96f, 0.9f).copy(alpha = 0.15f * jf * intensity * flicker),
+                        accentColor.copy(alpha = 0.06f * jf * intensity * flicker),
+                        Color.Transparent
+                    ),
+                    startY = y0,
+                    endY = y1
+                ),
+                blendMode = BlendMode.Plus
+            )
+            // яркая узкая сердцевина
+            drawPath(
+                path = Path().apply {
+                    moveTo(c.x - wBase * 0.35f, y0)
+                    lineTo(c.x + wBase * 0.35f, y0)
+                    lineTo(c.x + wTop * 0.28f, y1)
+                    lineTo(c.x - wTop * 0.28f, y1)
+                    close()
+                },
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color(1f, 0.99f, 0.95f).copy(alpha = 0.3f * jf * intensity * flicker),
+                        accentColor.copy(alpha = 0.1f * jf * flicker),
+                        Color.Transparent
+                    ),
+                    startY = y0,
+                    endY = y1
+                ),
+                blendMode = BlendMode.Plus
+            )
+            // продольные нити — дрожат и переливаются, джет «живой»
+            val fil = ((3 * quality).toInt()).coerceAtLeast(1)
+            for (i in 0 until fil) {
+                val f = (i + 0.5f) / fil
+                val off = (noise3(f * 5.5f + dir * 2.2f, time * 0.7f, 0.8f) - 0.5f) * wTop * 1.5f * f
+                drawLine(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color(1f, 0.95f, 0.88f).copy(alpha = 0.26f * jf * flicker * (1f - f * 0.55f)),
+                            Color.Transparent
+                        ),
+                        startY = y0,
+                        endY = y1
+                    ),
+                    start = Offset(c.x + off * 0.25f, y0),
+                    end = Offset(c.x + off, y1),
+                    strokeWidth = (1.4f * S / 220f).coerceIn(0.8f, 3f),
+                    cap = StrokeCap.Round,
+                    blendMode = BlendMode.Plus
+                )
+            }
+        }
+    }
+
     /** Обложки: задняя половина рисуется до дыры (её и прячет тень), передняя — после. */
     private fun DrawScope.drawArts(S: Float, back: Boolean) {
         val c = center
@@ -737,6 +930,24 @@ class BlackHoleScene {
             // растяжение идёт вдоль пути обложки на экране — у горизонта её вытягивает в нить
             val tangent = radiansToDegrees(kotlin.math.atan2(cos(art.angle) * squash, -sin(art.angle)))
             val color = heatedColor(art.heat)
+
+            // кометный хвост: тающий росчерк позади обложки вдоль её орбиты
+            if (quality >= 0.75f && art.alpha > 0.25f) {
+                val backAng = 0.15f
+                val bx = c.x + cos(art.angle - backAng) * art.radius * S
+                val by = c.y + (sin(art.angle - backAng) * art.radius * squash + art.y0 * thin) * S
+                drawLine(
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color.Transparent, color.copy(alpha = art.alpha * 0.2f)),
+                        start = Offset(bx, by),
+                        end = Offset(px, py)
+                    ),
+                    start = Offset(bx, by),
+                    end = Offset(px, py),
+                    strokeWidth = (min(w, h) * 0.55f).coerceIn(2f, 26f),
+                    cap = StrokeCap.Round
+                )
+            }
 
             rotate(degrees = tangent + radiansToDegrees(art.face), pivot = Offset(px, py)) {
                 val bitmap = art.bitmap
@@ -821,6 +1032,31 @@ class BlackHoleScene {
         val cx = rect.center.x
         val cy = rect.center.y
         val drawRect = Rect(cx - side / 2f, cy - side / 2f, cx + side / 2f, cy + side / 2f)
+
+        // луч из горизонта: поднимающуюся обложку «выносит» столб света
+        if (phase != RollPhase.EXPAND) {
+            val rayA = sin(heroGrow * PI.toFloat()) * 0.3f
+            if (rayA > 0.01f) {
+                val S = horizonPx
+                val yBottom = center.y + S * 1.02f
+                val yTop = cy - side * 0.25f
+                drawPath(
+                    path = Path().apply {
+                        moveTo(cx - S * 0.26f, yBottom)
+                        lineTo(cx + S * 0.26f, yBottom)
+                        lineTo(cx + side * 0.5f, yTop)
+                        lineTo(cx - side * 0.5f, yTop)
+                        close()
+                    },
+                    brush = Brush.verticalGradient(
+                        colors = listOf(accent.copy(alpha = rayA), Color.Transparent),
+                        startY = yBottom,
+                        endY = yTop
+                    ),
+                    blendMode = BlendMode.Plus
+                )
+            }
+        }
 
         // свечение акцентом — только пока обложка выходит из горизонта
         if (phase != RollPhase.EXPAND) {
@@ -914,6 +1150,7 @@ class BlackHoleScene {
         const val ART_COUNT = 34
         const val FLASH_COUNT = 8
         const val STAR_COUNT = 140
+        const val SPARK_COUNT = 26
         const val FILAMENTS = 130
         const val HERO_WORLD = 1.95f
     }

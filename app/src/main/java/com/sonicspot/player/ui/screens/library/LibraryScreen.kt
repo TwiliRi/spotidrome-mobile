@@ -364,7 +364,7 @@ fun LibraryScreen(
                         item {
                             Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                 Button(onClick = { viewModel.loadMoreArtists() }, colors = ButtonDefaults.buttonColors(containerColor = SpotifyColors.Gray)) {
-                                    Text("Загрузить ещё ${state.artists.size - state.visibleArtistCount} • показано ${state.visibleArtistCount} из ${state.artists.size}")
+                                    Text("Загрузить ещё")
                                 }
                             }
                         }
@@ -392,7 +392,7 @@ fun LibraryScreen(
                                 ) {
                                     Text(
                                         if (state.isLoadingMoreAlbums) "Загружаю…"
-                                        else "Загрузить ещё • показано ${state.albums.size}"
+                                        else "Загрузить ещё"
                                     )
                                 }
                             }

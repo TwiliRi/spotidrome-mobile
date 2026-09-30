@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.components.DownloadProgressButton
 import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.AddToPlaylistHost
@@ -38,6 +39,8 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
     val state by viewModel.uiState.collectAsState()
     val currentSongId by viewModel.playerManager.currentSongFlow.collectAsState()
     val likedIds by viewModel.likedIds.collectAsState()
+    val downloadedMap by viewModel.downloadedMap.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     val gradient = remember { Brush.verticalGradient(colors = listOf(Color(0xFF535353), Color(0xFF3A3A3A), SpotifyColors.Black), startY = 0f, endY = 800f) }
     // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
@@ -117,7 +120,21 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
                                 IconButton(onClick = { viewModel.toggleStar() }, modifier = Modifier.size(32.dp)) {
                                     Icon(if (state.isStarred) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = if (state.isStarred) SpotifyColors.Green else SpotifyColors.LightGray, modifier = Modifier.size(24.dp))
                                 }
-                                Icon(Icons.Default.DownloadForOffline, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(22.dp))
+                                val downloadedInAlbum = album.song.count { downloadedMap.containsKey(it.id) }
+                                val allAlbumDownloaded = album.song.isNotEmpty() && downloadedInAlbum == album.song.size
+                                val activeInAlbum = activeDownloads.values.filter { album.song.any { s -> s.id == it.song.id } }
+                                val albumProgress = if (activeInAlbum.isEmpty() || album.song.isEmpty()) null
+                                else if (activeInAlbum.any { it.progress == null }) null
+                                else (downloadedInAlbum + activeInAlbum.sumOf { (it.progress ?: 0f).toDouble() }) / album.song.size
+                                DownloadProgressButton(
+                                    isDownloading = activeInAlbum.isNotEmpty(),
+                                    progress = albumProgress?.toFloat()?.coerceIn(0f, 1f),
+                                    isDownloaded = allAlbumDownloaded,
+                                    onDownload = { viewModel.downloadAll() },
+                                    onCancel = { viewModel.cancelDownloads() },
+                                    size = 32.dp,
+                                    iconSize = 22.dp
+                                )
                                 Icon(Icons.Default.MoreVert, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(22.dp))
                             }
                             IconButton(onClick = { viewModel.playAll() }, modifier = Modifier.size(52.dp).clip(CircleShape).background(SpotifyColors.Green)) {
@@ -129,9 +146,8 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
             }
 
             item {
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(text = "#  Название • ${state.visibleSongs.size} из ${album.songCount}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray)
-                    if (state.hasMore) Text(text = "Ещё ${state.remainingCount}", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.Green)
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text(text = "#  Название", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray)
                 }
                 HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
                 Spacer(Modifier.height(4.dp))
@@ -139,7 +155,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
 
             itemsIndexed(state.visibleSongs, key = { _, song -> song.id }, contentType = { _, _ -> "song" }) { index, song ->
                 val isPlaying = currentSongId?.id == song.id
-                val isLiked = likedIds.contains(song.id) || song.isStarred
+                val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
                 val isDisliked = dislikedIds.contains(song.id)
                 SongRowModern(
                     song = song,
@@ -164,7 +180,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
                     Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = SpotifyColors.Green)
-                            Text("Загружаем ещё ${state.remainingCount.coerceAtMost(20)} треков...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
+                            Text("Загружаем ещё треки...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
                         }
                     }
                 }
@@ -173,10 +189,6 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
             item {
                 Spacer(Modifier.height(16.dp))
                 Text(text = (album.year?.toString() ?: "") + " • ${album.artist} • ${album.songCount} треков", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.LightGray, modifier = Modifier.padding(horizontal = 16.dp))
-                Spacer(Modifier.height(8.dp))
-                if (!state.hasMore) {
-                    Text(text = "Показаны все ${album.songCount} треков", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = SpotifyColors.MediumGray, modifier = Modifier.padding(horizontal = 16.dp))
-                }
             }
         }
         } // ProvidePauseImageLoadsDuringScroll
@@ -195,7 +207,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
         SongOptionsSheet(
             song = songMenu,
             coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
-            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isLiked = songMenu?.let { (likedIds.contains(it.id) || it.isStarred) && !dislikedIds.contains(it.id) } == true,
             isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
             onDismiss = { songMenu = null },
             onAddToPlaylist = {

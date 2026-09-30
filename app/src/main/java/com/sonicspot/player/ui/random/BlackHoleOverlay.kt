@@ -4,11 +4,16 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -164,39 +169,52 @@ private fun PhaseCaption(phase: RollPhase, track: Song?, modifier: Modifier = Mo
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (named && track != null) {
-            Text(
-                text = "ВЫПАЛ ТРЕК",
-                color = SpotifyColors.White.copy(alpha = 0.5f),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 2.6.sp)
-            )
-            Text(
-                text = track.title,
-                color = SpotifyColors.White,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    shadow = Shadow(color = Color.White.copy(alpha = 0.35f), blurRadius = 34f)
+        // Плавная смена подписи: название трека всплывает снизу,
+        // прежний текст фазы мягко тает
+        AnimatedContent(
+            targetState = (named to track?.id),
+            transitionSpec = {
+                (fadeIn(tween(450)) + slideInVertically(tween(450)) { it / 4 })
+                    .togetherWith(fadeOut(tween(150)))
+            },
+            label = "captionSwap"
+        ) { (namedNow, _) ->
+            if (namedNow && track != null) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "ВЫПАЛ ТРЕК",
+                        color = SpotifyColors.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 2.6.sp)
+                    )
+                    Text(
+                        text = track.title,
+                        color = SpotifyColors.White,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            shadow = Shadow(color = Color.White.copy(alpha = 0.35f), blurRadius = 34f)
+                        )
+                    )
+                    Text(
+                        text = track.artist ?: "Unknown",
+                        color = SpotifyColors.White.copy(alpha = 0.62f),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp)
+                    )
+                }
+            } else {
+                Text(
+                    text = when (phase) {
+                        RollPhase.IDLE -> "ГОРИЗОНТ СОБЫТИЙ…"
+                        RollPhase.BALANCE -> "ИЩЕМ ЧТО-НИБУДЬ СТОЯЩЕЕ…"
+                        RollPhase.SETTLE -> "ЗАТЯГИВАЕТ…"
+                        else -> "ВЫБРАСЫВАЕТ ОБЛОЖКИ…"
+                    },
+                    color = SpotifyColors.White.copy(alpha = pulseAlpha),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 2.6.sp)
                 )
-            )
-            Text(
-                text = track.artist ?: "Unknown",
-                color = SpotifyColors.White.copy(alpha = 0.62f),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp)
-            )
-        } else {
-            Text(
-                text = when (phase) {
-                    RollPhase.IDLE -> "ГОРИЗОНТ СОБЫТИЙ…"
-                    RollPhase.BALANCE -> "ИЩЕМ ЧТО-НИБУДЬ СТОЯЩЕЕ…"
-                    RollPhase.SETTLE -> "ЗАТЯГИВАЕТ…"
-                    else -> "ВЫБРАСЫВАЕТ ОБЛОЖКИ…"
-                },
-                color = SpotifyColors.White.copy(alpha = pulseAlpha),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 2.6.sp)
-            )
+            }
         }
         Text(
             text = "нажми, чтобы пропустить",

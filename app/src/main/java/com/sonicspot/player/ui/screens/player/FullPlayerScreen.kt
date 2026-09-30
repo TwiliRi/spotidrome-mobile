@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -50,13 +51,20 @@ import com.sonicspot.player.ui.components.SleepTimerButton
 import com.sonicspot.player.ui.components.SleepTimerCompactIconButton
 import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
 import com.sonicspot.player.ui.theme.*
+import com.sonicspot.player.util.ArtistToken
+import com.sonicspot.player.util.buildArtistTokens
 import kotlin.math.abs
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewModel()) {
+fun FullPlayerScreen(
+    onClose: () -> Unit,
+    /** Переход на страницу исполнителя одним нажатием (по тексту под названием трека). */
+    onArtistClick: (artistId: String) -> Unit = {},
+    viewModel: PlayerViewModel = hiltViewModel()
+) {
     val currentSong by viewModel.playerManager.currentSongFlow.collectAsState()
     val isPlaying by viewModel.playerManager.isPlayingFlow.collectAsState()
     val playerState by viewModel.playerManager.playerState.collectAsState()
@@ -100,9 +108,28 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
         return
     }
 
-    val isLiked = likedIds.contains(song.id) || song.isStarred
+    val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
     val isDisliked = dislikedIds.contains(song.id)
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Клик по имени исполнителя: если id известен (OpenSubsonic / тег трека) — сразу на страницу,
+    // иначе ищем исполнителя поиском и переходим; не нашли — сообщаем.
+    fun handleArtistTokenClick(token: ArtistToken) {
+        val directId = token.id?.takeIf { it.isNotBlank() }
+        if (directId != null) {
+            onArtistClick(directId)
+        } else {
+            scope.launch {
+                val id = viewModel.findArtistIdByName(token.name)
+                if (id != null) {
+                    onArtistClick(id)
+                } else {
+                    android.widget.Toast.makeText(context, "Исполнитель «${token.name}» не найден", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
     // FIX: 600px для большого плеера (0.85f ширины ~300dp = 600px 2x).
     // ВАЖНО: allowHardware(false)+RGB_565 — это SOFTWARE-битмап, который графический
     // конвейер вынужден заливать в GL-текстуру на КАЖДОМ кадре. Прежний комментарий про
@@ -170,7 +197,64 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                         Column(Modifier.weight(1f)) {
                             Text(song.title, style = SpotifyTextStyles.PlayerTitle.copy(fontSize = 22.sp), color = SpotifyColors.White, maxLines = 1)
                             Spacer(Modifier.height(4.dp))
-                            Text(song.artist ?: "Unknown", style = MaterialTheme.typography.bodyMedium.copy(color = SpotifyColors.LightGray, fontSize = 15.sp), maxLines = 1)
+                            // Каждый исполнитель трека — отдельная кнопка перехода на его страницу
+                            // («A feat. B» — два кликабельных имени). Разделители сохраняются как в исходной строке.
+                            val artistTokens = remember(song.id, song.artist, song.artists) { buildArtistTokens(song) }
+                            if (artistTokens.size <= 1) {
+                                // Один исполнитель — строка целиком кликабельна, с шевроном
+                                val token = artistTokens.firstOrNull()
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable(enabled = token != null) { token?.let { handleArtistTokenClick(it) } }
+                                        .padding(vertical = 2.dp, horizontal = 2.dp)
+                                ) {
+                                    Text(
+                                        song.artist ?: "Unknown",
+                                        style = MaterialTheme.typography.bodyMedium.copy(color = SpotifyColors.LightGray, fontSize = 15.sp),
+                                        maxLines = 1
+                                    )
+                                    if (token != null) {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowRight,
+                                            "Перейти к исполнителю",
+                                            tint = SpotifyColors.LightGray,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Несколько исполнителей — каждое имя кликабельно, разделители — обычный текст
+                                FlowRow(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    artistTokens.forEachIndexed { index, token ->
+                                        Text(
+                                            text = token.name,
+                                            style = MaterialTheme.typography.bodyMedium.copy(color = SpotifyColors.LightGray, fontSize = 15.sp),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable { handleArtistTokenClick(token) }
+                                                .padding(
+                                                    start = if (index == 0) 0.dp else 4.dp,
+                                                    top = 2.dp,
+                                                    end = 4.dp,
+                                                    bottom = 2.dp
+                                                )
+                                        )
+                                        if (index < artistTokens.lastIndex) {
+                                            Text(
+                                                text = token.separatorAfter ?: ", ",
+                                                style = MaterialTheme.typography.bodyMedium.copy(color = SpotifyColors.LightGray.copy(alpha = 0.75f), fontSize = 15.sp),
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                             // Добавление в плейлист — та же шторка выбора, что и в списках треков
@@ -309,11 +393,16 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                     ArtistInfoSection(
                         artistName = song.artist ?: "Unknown",
                         artistInfo = artistInfo,
+                        onArtistClick = {
+                            // Основной исполнитель — та же цепочка, что и у имён в заголовке:
+                            // id из OpenSubsonic/тега трека, иначе поиск по имени; при неудаче — тост
+                            buildArtistTokens(song).firstOrNull()?.let { handleArtistTokenClick(it) }
+                        },
                         // FIX: было 300px для всех, теперь размеры внутри секции: avatar 128px, topSongs 80px
                         coverUrlProvider = { id -> viewModel.getCoverUrl(id, 128) },
                         onSongClick = { _, idx -> viewModel.playerManager.playSongs(artistInfo.topSongs, idx) },
                         onArtistRadio = { viewModel.startArtistRadio(song.artist ?: "") },
-                        artistShareUrl = viewModel.getArtistShareUrl(song.artistId ?: artistInfo.artistDetail?.id),
+                        artistShareUrl = viewModel.getArtistShareUrl(song.artistId ?: artistInfo.resolvedArtistId ?: artistInfo.artistDetail?.id),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -355,7 +444,10 @@ fun FullPlayerScreen(onClose: () -> Unit, viewModel: PlayerViewModel = hiltViewM
                 onAddToQueue = { viewModel.addToQueue(song); showTrackOptions = false },
                 onAddNext = { viewModel.addNext(song); showTrackOptions = false },
                 onGoToAlbum = { showTrackOptions = false },
-                onGoToArtist = { showTrackOptions = false },
+                onGoToArtist = { token ->
+                    showTrackOptions = false
+                    handleArtistTokenClick(token)
+                },
                 onStartTrackRadio = { viewModel.startTrackRadio(song); showTrackOptions = false },
                 onStartArtistRadio = { viewModel.startArtistRadio(song.artist ?: ""); showTrackOptions = false },
                 onToggleAutoDj = { viewModel.toggleAutoDj() },
@@ -900,6 +992,7 @@ private fun ArtistInfoSection(
     coverUrlProvider: (String?) -> String?,
     onSongClick: (com.sonicspot.player.data.model.Song, Int) -> Unit,
     onArtistRadio: () -> Unit,
+    onArtistClick: () -> Unit = {},
     artistShareUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
@@ -917,7 +1010,15 @@ private fun ArtistInfoSection(
         Spacer(Modifier.height(12.dp))
         Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SpotifyColors.Gray).padding(16.dp)) {
             Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // Имя исполнителя кликабельно — переход на его страницу
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onArtistClick() }
+                        .padding(vertical = 4.dp)
+                ) {
                     Box(modifier = Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF450AF5), Color(0xFF8E8EE5)))), contentAlignment = Alignment.Center) {
                         val cover = artistInfo.artistDetail?.coverArt?.let { coverUrlProvider(it) }
                         if (cover != null) com.sonicspot.player.ui.components.CoverArtImage(url = cover, modifier = Modifier.fillMaxSize(), cornerRadius = 32.dp, sizePx = 128)
@@ -934,6 +1035,12 @@ private fun ArtistInfoSection(
                             Text(if (albumCount > 0) "$albumCount альбомов • ${artistInfo.topSongs.size} треков" else "Исполнитель", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                    Icon(
+                        Icons.Default.KeyboardArrowRight,
+                        "Перейти к исполнителю",
+                        tint = SpotifyColors.LightGray,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1097,7 +1204,7 @@ private fun TrackOptionsBottomSheet(
     onAddToQueue: () -> Unit,
     onAddNext: () -> Unit,
     onGoToAlbum: () -> Unit,
-    onGoToArtist: () -> Unit,
+    onGoToArtist: (ArtistToken) -> Unit,
     onStartTrackRadio: () -> Unit,
     onStartArtistRadio: () -> Unit,
     onToggleAutoDj: () -> Unit,
@@ -1124,6 +1231,16 @@ private fun TrackOptionsBottomSheet(
             )
             BottomSheetItem(icon = Icons.Default.QueueMusic, title = "Добавить в очередь", onClick = onAddToQueue)
             BottomSheetItem(icon = Icons.Default.SkipNext, title = "Играть следующим", onClick = onAddNext)
+            // Переход к исполнителю одним нажатием — тот же переход, что и по именам под названием трека.
+            // Если исполнителей несколько — отдельный пункт на каждого.
+            val sheetArtistTokens = remember(song.id, song.artist, song.artists) { buildArtistTokens(song) }
+            when (sheetArtistTokens.size) {
+                0 -> {} // исполнителя нет — пункт не показываем
+                1 -> BottomSheetItem(icon = Icons.Default.Person, title = "Перейти к исполнителю", subtitle = sheetArtistTokens.first().name, onClick = { sheetArtistTokens.first().let(onGoToArtist) })
+                else -> sheetArtistTokens.forEach { token ->
+                    BottomSheetItem(icon = Icons.Default.Person, title = token.name, subtitle = "Перейти к исполнителю", onClick = { onGoToArtist(token) })
+                }
+            }
             HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.2f), modifier = Modifier.padding(vertical = 4.dp))
             BottomSheetItem(icon = Icons.Filled.Radio, title = "Радио по треку", subtitle = "Похожие треки", onClick = onStartTrackRadio)
             BottomSheetItem(icon = Icons.Filled.Podcasts, title = "Радио по исполнителю", subtitle = "Треки ${song.artist}", onClick = onStartArtistRadio)

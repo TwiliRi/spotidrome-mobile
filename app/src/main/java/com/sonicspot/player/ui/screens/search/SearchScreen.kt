@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -28,7 +29,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sonicspot.player.data.model.Genre
 import com.sonicspot.player.data.model.SearchHistoryEntry
+import com.sonicspot.player.data.model.SearchListenEntry
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.*
 import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
@@ -49,6 +52,8 @@ fun SearchScreen(
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     val history by viewModel.searchHistory.collectAsState()
     val grouped by viewModel.groupedHistory.collectAsState()
+    val genres by viewModel.genres.collectAsState()
+    val recentListens by viewModel.recentListens.collectAsState()
     // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
     val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
     var songMenu by remember { mutableStateOf<Song?>(null) }
@@ -187,15 +192,57 @@ fun SearchScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
-                            SectionHeaderModern(title = "Обзор")
+                        // Треки и исполнители, найденные через поиск и реально прослушанные
+                        if (recentListens.isNotEmpty()) {
+                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }, key = "recent_listens_header") {
+                                SectionHeaderModern(title = "Недавно слушали")
+                            }
+                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }, key = "recent_listens_row") {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    items(recentListens, key = { "${it.kind}_${it.id}" }) { entry ->
+                                        RecentListenCard(
+                                            entry = entry,
+                                            coverUrl = viewModel.getCoverUrl(entry.coverArt, 224),
+                                            onClick = {
+                                                if (entry.isSong) {
+                                                    viewModel.playSongs(listOf(entry.toSong()), 0)
+                                                } else if (entry.hasRealId) {
+                                                    onArtistClick(entry.id)
+                                                } else {
+                                                    // У исполнителя нет id с сервера — ищем по имени
+                                                    viewModel.onQueryChange(entry.title)
+                                                    focusRequester.requestFocus()
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        items(browseCategories, key = { it.first }) { (title, color) ->
-                            CategoryCard(title = title, color = color, onClick = {
-                                viewModel.onQueryChange(title)
-                                // При клике на категорию сразу фокусируем? Нет, просто ищем
-                                focusRequester.requestFocus()
-                            })
+
+                        // Все жанры сервера; если сервер не отдал жанры — обычные категории
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }, key = "genres_header") {
+                            SectionHeaderModern(title = if (genres.isNotEmpty()) "Все жанры" else "Обзор")
+                        }
+                        if (genres.isNotEmpty()) {
+                            items(genres, key = { "genre_${it.value}" }) { genre ->
+                                CategoryCard(
+                                    title = genre.value,
+                                    color = genreColorFor(genre.value),
+                                    onClick = {
+                                        viewModel.onQueryChange(genre.value)
+                                        focusRequester.requestFocus()
+                                    },
+                                    subtitle = genreSubtitle(genre)
+                                )
+                            }
+                        } else {
+                            items(browseCategories, key = { it.first }) { (title, color) ->
+                                CategoryCard(title = title, color = color, onClick = {
+                                    viewModel.onQueryChange(title)
+                                    focusRequester.requestFocus()
+                                })
+                            }
                         }
                     }
                 }
@@ -217,12 +264,12 @@ fun SearchScreen(
                     }
 
                     if (state.artists.isNotEmpty()) {
-                        item { SectionHeaderModern(title = "Исполнители • ${state.visibleArtists.size} из ${state.artists.size}") }
+                        item { SectionHeaderModern(title = "Исполнители") }
                         items(artistRows.size, key = { "artist_row_${artistRows[it].firstOrNull()?.id}" }, contentType = { "artist_row" }) { rowIdx ->
                             val row = artistRows[rowIdx]
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 row.forEach { artist ->
-                                    ArtistCardModern(artist = artist, coverUrl = viewModel.getCoverUrl(artist.coverArt, 240), onClick = { onArtistClick(artist.id) }, modifier = Modifier.weight(1f))
+                                    ArtistCardModern(artist = artist, coverUrl = viewModel.getCoverUrl(artist.coverArt, 240), onClick = { viewModel.onArtistOpenedFromSearch(artist); onArtistClick(artist.id) }, modifier = Modifier.weight(1f))
                                 }
                                 if (row.size == 1) Spacer(Modifier.weight(1f))
                             }
@@ -230,7 +277,7 @@ fun SearchScreen(
                         if (state.hasMoreArtists) {
                             item {
                                 Box(modifier = Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                    Text("Загружаем ещё... • осталось ${state.artists.size - state.visibleArtistCount}", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
+                                    Text("Загружаем ещё...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
                                 }
                             }
                         }
@@ -238,7 +285,7 @@ fun SearchScreen(
                     if (state.albums.isNotEmpty()) {
                         item {
                             Spacer(Modifier.height(16.dp))
-                            SectionHeaderModern(title = "Альбомы • ${state.visibleAlbums.size} из ${state.albums.size}")
+                            SectionHeaderModern(title = "Альбомы")
                         }
                         items(albumRows.size, key = { "album_row_${albumRows[it].firstOrNull()?.id}" }, contentType = { "album_row" }) { rowIdx ->
                             val row = albumRows[rowIdx]
@@ -260,11 +307,11 @@ fun SearchScreen(
                     if (state.songs.isNotEmpty()) {
                         item {
                             Spacer(Modifier.height(16.dp))
-                            SectionHeaderModern(title = "Треки • ${state.visibleSongs.size} из ${state.songs.size}")
+                            SectionHeaderModern(title = "Треки")
                         }
                         items(state.visibleSongs, key = { it.id }) { song ->
                             val isPlaying = currentSongId?.id == song.id
-                            val isLiked = likedIds.contains(song.id) || song.isStarred
+                            val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
                             val isDisliked = dislikedIds.contains(song.id)
                             SongRowModern(
                                 song = song,
@@ -287,7 +334,7 @@ fun SearchScreen(
                                 Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = SpotifyColors.Green)
-                                        Text("Загружаем ещё ${state.songs.size - state.visibleSongCount} треков...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
+                                        Text("Загружаем ещё треки...", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
                                     }
                                 }
                             }
@@ -331,7 +378,7 @@ fun SearchScreen(
         SongOptionsSheet(
             song = songMenu,
             coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
-            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isLiked = songMenu?.let { (likedIds.contains(it.id) || it.isStarred) && !dislikedIds.contains(it.id) } == true,
             isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
             onDismiss = { songMenu = null },
             onAddToPlaylist = {
@@ -485,5 +532,76 @@ private fun SmartSuggestionsSection(
                 }
             }
         }
+    }
+}
+
+// ==================== Недавно слушали (из поиска) + жанры ====================
+
+// Палитра карточек жанров
+private val genrePalette = listOf(
+    SpotifyColors.CategoryBlue,
+    SpotifyColors.CategoryRed,
+    SpotifyColors.CategoryGreen,
+    SpotifyColors.CategoryOrange,
+    SpotifyColors.CategoryPink,
+    Color(0xFF477D95),
+    Color(0xFF8D67AB),
+    Color(0xFFBA5D07),
+    Color(0xFF148A08),
+    Color(0xFFD84000),
+    Color(0xFF8C1932),
+    Color(0xFF777777)
+)
+
+// Стабильный цвет: один и тот же жанр всегда окрашен одинаково
+private fun genreColorFor(name: String): Color =
+    genrePalette[kotlin.math.abs(name.hashCode()) % genrePalette.size]
+
+private fun plural(n: Int, one: String, few: String, many: String): String = when {
+    n % 100 in 11..14 -> many
+    n % 10 == 1 -> one
+    n % 10 in 2..4 -> few
+    else -> many
+}
+
+private fun genreSubtitle(genre: Genre): String? = when {
+    genre.albumCount > 0 -> "${genre.albumCount} ${plural(genre.albumCount, "альбом", "альбома", "альбомов")}"
+    genre.songCount > 0 -> "${genre.songCount} ${plural(genre.songCount, "трек", "трека", "треков")}"
+    else -> null
+}
+
+// Карточка трека/исполнителя в «Недавно слушали»
+@Composable
+private fun RecentListenCard(entry: SearchListenEntry, coverUrl: String?, onClick: () -> Unit) {
+    Column(modifier = Modifier.width(116.dp).clickable { onClick() }) {
+        Box(modifier = Modifier.size(116.dp), contentAlignment = Alignment.BottomEnd) {
+            if (entry.isSong) {
+                CoverArtImage(url = coverUrl, modifier = Modifier.size(116.dp).clip(RoundedCornerShape(8.dp)), cornerRadius = 8.dp, sizePx = 224)
+            } else {
+                CoverArtImage(url = coverUrl, modifier = Modifier.size(116.dp).clip(CircleShape), cornerRadius = 58.dp, sizePx = 224)
+                // Бейдж, отличающий исполнителя от трека
+                Box(
+                    modifier = Modifier.size(28.dp).clip(CircleShape).background(SpotifyColors.Black.copy(alpha = 0.75f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Person, null, tint = SpotifyColors.White, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = entry.title,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp),
+            color = SpotifyColors.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = if (entry.isSong) (entry.subtitle ?: "") else "Исполнитель",
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+            color = SpotifyColors.LightGray,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

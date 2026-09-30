@@ -46,6 +46,9 @@ interface NavidromeApi {
         @Header("Cache-Control") cacheControl: String? = null
     ): SubsonicResponse
 
+    @GET("rest/getGenres.view")
+    suspend fun getGenres(@Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
+
     @GET("rest/getPlaylists.view")
     suspend fun getPlaylists(@Header("Cache-Control") cacheControl: String? = null): SubsonicResponse
 

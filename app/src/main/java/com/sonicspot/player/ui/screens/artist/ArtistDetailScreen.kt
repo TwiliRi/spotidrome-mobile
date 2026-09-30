@@ -8,11 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -50,6 +46,8 @@ fun ArtistDetailScreen(
     artistId: String,
     onBack: () -> Unit,
     onAlbumClick: (String) -> Unit = {},
+    /** Ключ группы дискографии (ReleaseTypes.*) — открыть страницу со всеми релизами этого типа */
+    onSeeAllAlbums: (String) -> Unit = {},
     viewModel: ArtistDetailViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -64,12 +62,12 @@ fun ArtistDetailScreen(
     val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
 
     var showAllTracks by remember { mutableStateOf(false) }
+    var showAllLiked by remember { mutableStateOf(false) }
     var showArtistOptions by remember { mutableStateOf(false) }
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showSongOptions by remember { mutableStateOf(false) }
     var selectedAlbumForOptions by remember { mutableStateOf<Album?>(null) }
     var showAlbumOptions by remember { mutableStateOf(false) }
-    var showAllAlbumsSheet by remember { mutableStateOf(false) }
 
     // Копирование ссылки на Navidrome в буфер обмена
     fun copyNavidromeLink(link: String, label: String = "Ссылка скопирована") {
@@ -102,7 +100,6 @@ fun ArtistDetailScreen(
             showSongOptions -> showSongOptions = false
             showAlbumOptions -> showAlbumOptions = false
             showArtistOptions -> showArtistOptions = false
-            showAllAlbumsSheet -> showAllAlbumsSheet = false
             else -> onBack()
         }
     }
@@ -124,6 +121,12 @@ fun ArtistDetailScreen(
                 }
             }
             return
+        }
+
+        // Понравившиеся треки артиста: starred с сервера + топ-треки, пересечённые с локальными лайками.
+        // Пересчитывается сразу при лайке/анлайке, поэтому блок всегда актуален.
+        val likedSongs = remember(state.starredOfArtist, state.topSongs, likedIds) {
+            (state.starredOfArtist + state.topSongs).distinctBy { it.id }.filter { likedIds.contains(it.id) }
         }
 
         // Пауза загрузки обложек во время флинга = плавный скролл 60fps.
@@ -212,7 +215,7 @@ fun ArtistDetailScreen(
                             Box(
                                 modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(SpotifyColors.GrayLighter.copy(alpha = 0.3f)).padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
-                                Text("${artist.albumCount} альбомов", style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold), color = SpotifyColors.White)
+                                Text(releaseSummary(state.discography), style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold), color = SpotifyColors.White)
                             }
                             if (state.topSongs.isNotEmpty()) {
                                 Spacer(Modifier.width(8.dp))
@@ -258,6 +261,55 @@ fun ArtistDetailScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
+            // ПОНРАВИВШИЕСЯ ТРЕКИ АРТИСТА — перед популярными
+            if (likedSongs.isNotEmpty()) {
+                item(key = "liked_header", contentType = "liked_header") {
+                    SectionHeaderModern(title = "В понравившихся")
+                    Spacer(Modifier.height(4.dp))
+                }
+                val likedToShow = if (showAllLiked) likedSongs else likedSongs.take(5)
+                itemsIndexed(likedToShow, key = { _, s -> "liked_${s.id}" }, contentType = { _, _ -> "song" }) { index, song ->
+                    val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
+                    SongRowModern(
+                        song = song,
+                        coverUrl = coverUrl,
+                        isPlaying = currentSongId?.id == song.id,
+                        isLiked = true,
+                        isDisliked = dislikedIds.contains(song.id),
+                        showCover = true,
+                        onClick = { viewModel.playSongsAt(likedSongs, index) },
+                        onMore = {
+                            selectedSong = song
+                            showSongOptions = true
+                        },
+                        onLike = { viewModel.toggleLike(song.id) },
+                        onDislike = { viewModel.toggleDislike(song.id) }
+                    )
+                }
+                item(key = "liked_show_more", contentType = "liked_footer") {
+                    if (likedSongs.size > 5) {
+                        TextButton(
+                            onClick = { showAllLiked = !showAllLiked },
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        ) {
+                            Text(
+                                if (showAllLiked) "Свернуть" else "Показать еще ${likedSongs.size - 5}",
+                                color = SpotifyColors.LightGray,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                if (showAllLiked) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                null,
+                                tint = SpotifyColors.LightGray,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
+
             // POPULAR TRACKS
             if (state.topSongs.isNotEmpty()) {
                 item {
@@ -272,7 +324,7 @@ fun ArtistDetailScreen(
                         song = song,
                         coverUrl = coverUrl,
                         isPlaying = isPlaying,
-                        isLiked = likedIds.contains(song.id) || song.isStarred,
+                        isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id),
                         isDisliked = dislikedIds.contains(song.id),
                         trackNumber = index + 1,
                         showCover = true,
@@ -319,31 +371,40 @@ fun ArtistDetailScreen(
 
             // УБРАНА группа "Популярные релизы"
 
-            // DISCOGRAPHY - единственная группа альбомов - теперь через PaginatedLazyRow 3 сразу
-            item {
-                SectionHeaderModern(title = "Дискография", onSeeAll = {
-                    showAllAlbumsSheet = true
-                })
-                com.sonicspot.player.ui.components.PaginatedLazyRow(
-                    items = artist.album,
-                    initialVisible = 3,
-                    pageSize = 4,
-                    key = { it.id },
-                    itemContent = { album ->
-                        val albumCoverUrl = remember(album.coverArt) { viewModel.getCoverUrl(album.coverArt, 304) }
-                        AlbumCardModern(
-                            album = album,
-                            coverUrl = albumCoverUrl,
-                            onClick = { onAlbumClick(album.id) },
-                            onLongClick = {
-                                selectedAlbumForOptions = album
-                                showAlbumOptions = true
-                            }
-                        )
-                    }
-                )
-                Spacer(Modifier.height(24.dp))
-            }
+            // DISCOGRAPHY - четыре отдельные группы: альбомы, EP, синглы и «Участие».
+            // Каждая рисуется только если в ней есть релизы.
+            discographySection(
+                title = "Альбомы",
+                albums = state.discography.albums,
+                onAlbumClick = onAlbumClick,
+                onAlbumLongClick = { album -> selectedAlbumForOptions = album; showAlbumOptions = true },
+                onSeeAll = { onSeeAllAlbums(ReleaseTypes.ALBUMS) },
+                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 304) }
+            )
+            discographySection(
+                title = "EP",
+                albums = state.discography.eps,
+                onAlbumClick = onAlbumClick,
+                onAlbumLongClick = { album -> selectedAlbumForOptions = album; showAlbumOptions = true },
+                onSeeAll = { onSeeAllAlbums(ReleaseTypes.EPS) },
+                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 304) }
+            )
+            discographySection(
+                title = "Синглы",
+                albums = state.discography.singles,
+                onAlbumClick = onAlbumClick,
+                onAlbumLongClick = { album -> selectedAlbumForOptions = album; showAlbumOptions = true },
+                onSeeAll = { onSeeAllAlbums(ReleaseTypes.SINGLES) },
+                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 304) }
+            )
+            discographySection(
+                title = "Участие",
+                albums = state.discography.appearsOn,
+                onAlbumClick = onAlbumClick,
+                onAlbumLongClick = { album -> selectedAlbumForOptions = album; showAlbumOptions = true },
+                onSeeAll = { onSeeAllAlbums(ReleaseTypes.APPEARS_ON) },
+                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 304) }
+            )
 
             // ABOUT
             item {
@@ -367,7 +428,7 @@ fun ArtistDetailScreen(
                                 Spacer(Modifier.width(12.dp))
                                 Column {
                                     Text(artist.name, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SpotifyColors.White, maxLines = 1)
-                                    Text("${artist.albumCount} альбомов • ${artist.album.size} релизов", style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = SpotifyColors.LightGray)
+                                    Text(releaseSummary(state.discography), style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp), color = SpotifyColors.LightGray)
                                 }
                             }
                             Spacer(Modifier.height(12.dp))
@@ -440,7 +501,7 @@ fun ArtistDetailScreen(
             ArtistSongOptionsBottomSheet(
                 song = selectedSong!!,
                 coverUrl = viewModel.getCoverUrl(selectedSong!!.coverArt, 112),
-                isLiked = likedIds.contains(selectedSong!!.id),
+                isLiked = (likedIds.contains(selectedSong!!.id) || selectedSong!!.isStarred) && !dislikedIds.contains(selectedSong!!.id),
                 isDisliked = dislikedIds.contains(selectedSong!!.id),
                 shareUrl = viewModel.getSongShareUrl(selectedSong!!.id),
                 onDismiss = { showSongOptions = false; selectedSong = null },
@@ -477,25 +538,52 @@ fun ArtistDetailScreen(
                 onCopyLink = { copyAlbumLink(selectedAlbumForOptions!!); showAlbumOptions = false }
             )
         }
-
-        if (showAllAlbumsSheet) {
-            AllAlbumsBottomSheet(
-                albums = artist.album,
-                title = "Дискография",
-                coverUrlProvider = { id -> viewModel.getCoverUrl(id, 304) },
-                onDismiss = { showAllAlbumsSheet = false },
-                onAlbumClick = { albumId ->
-                    showAllAlbumsSheet = false
-                    onAlbumClick(albumId)
-                },
-                onAlbumLongClick = { album ->
-                    selectedAlbumForOptions = album
-                    showAlbumOptions = true
-                }
-            )
-        }
     }
 }
+
+/**
+ * Одна группа дискографии (альбомы / EP / синглы / участие): заголовок с «Показать все»
+ * и горизонтальная карусель релизов с постраничной загрузкой обложек.
+ */
+private fun LazyListScope.discographySection(
+    title: String,
+    albums: List<Album>,
+    onAlbumClick: (String) -> Unit,
+    onAlbumLongClick: (Album) -> Unit,
+    onSeeAll: () -> Unit,
+    coverUrlProvider: (String?) -> String?
+) {
+    if (albums.isEmpty()) return
+    item(key = "discography_$title", contentType = "discography_header") {
+        SectionHeaderModern(title = title, onSeeAll = onSeeAll)
+    }
+    item(key = "discography_${title}_row", contentType = "discography_row") {
+        com.sonicspot.player.ui.components.PaginatedLazyRow(
+            items = albums,
+            initialVisible = 3,
+            pageSize = 4,
+            key = { it.id },
+            itemContent = { album ->
+                val albumCoverUrl = remember(album.coverArt) { coverUrlProvider(album.coverArt) }
+                AlbumCardModern(
+                    album = album,
+                    coverUrl = albumCoverUrl,
+                    onClick = { onAlbumClick(album.id) },
+                    onLongClick = { onAlbumLongClick(album) }
+                )
+            }
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Короткая сводка дискографии: «12 альбомов • 3 EP • 7 синглов». */
+private fun releaseSummary(d: ArtistDiscography): String = listOfNotNull(
+    if (d.albums.isNotEmpty()) pluralRu(d.albums.size, "альбом", "альбома", "альбомов") else null,
+    if (d.eps.isNotEmpty()) "${d.eps.size} EP" else null,
+    if (d.singles.isNotEmpty()) pluralRu(d.singles.size, "сингл", "сингла", "синглов") else null,
+    if (d.appearsOn.isNotEmpty()) pluralRu(d.appearsOn.size, "участие", "участия", "участий") else null
+).joinToString(" • ").ifEmpty { "Исполнитель" }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -644,47 +732,6 @@ private fun ArtistAlbumOptionsBottomSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AllAlbumsBottomSheet(
-    albums: List<Album>,
-    title: String,
-    coverUrlProvider: (String?) -> String?,
-    onDismiss: () -> Unit,
-    onAlbumClick: (String) -> Unit,
-    onAlbumLongClick: (Album) -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = SpotifyColors.Gray,
-        contentColor = SpotifyColors.White,
-        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = SpotifyColors.White)
-                Text("${albums.size} альбомов", style = MaterialTheme.typography.bodySmall, color = SpotifyColors.LightGray)
-            }
-            HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.2f))
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.heightIn(max = 500.dp)
-            ) {
-                items(albums, key = { it.id }) { album ->
-                    AlbumCardModern(
-                        album = album,
-                        coverUrl = coverUrlProvider(album.coverArt),
-                        onClick = { onAlbumClick(album.id) },
-                        onLongClick = { onAlbumLongClick(album) }
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun BottomSheetItem(

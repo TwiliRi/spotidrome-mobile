@@ -371,7 +371,7 @@ fun HomeScreen(
                                 // Обычные вычисления: дешевле, чем remember+derivedStateOf с
                                 // глубоким equals по Song на каждый рекомпоз родителя
                                 val isPlaying = currentSongId?.id == song.id
-                                val isLiked = likedIds.contains(song.id) || song.isStarred
+                                val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
                                 val isDisliked = dislikedIds.contains(song.id)
                                 val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                                 SongRowModern(
@@ -506,7 +506,7 @@ fun HomeScreen(
         SongOptionsSheet(
             song = songMenu,
             coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
-            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isLiked = songMenu?.let { (likedIds.contains(it.id) || it.isStarred) && !dislikedIds.contains(it.id) } == true,
             isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
             onDismiss = { songMenu = null },
             onAddToPlaylist = {

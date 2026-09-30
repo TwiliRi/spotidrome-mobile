@@ -573,10 +573,28 @@ fun SpotifySearchBarCompat(query: String, onQueryChange: (String) -> Unit, modif
 
 // ==================== CATEGORY CARD ====================
 @Composable
-fun CategoryCard(title: String, color: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun CategoryCard(title: String, color: Color, onClick: () -> Unit, modifier: Modifier = Modifier, subtitle: String? = null) {
     val brush = remember(color) { Brush.linearGradient(colors = listOf(color, color.copy(alpha = 0.8f))) }
     Box(modifier = modifier.height(84.dp).clip(RoundedCornerShape(6.dp)).background(brush).clickable { onClick() }) {
-        Text(text = title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp), color = SpotifyColors.White, modifier = Modifier.padding(10.dp))
+        // Текст не должен обрезаться: отступ справа, чтобы не заезжать под ноту, и многоточие при переносе
+        Column(modifier = Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = 10.dp, end = 40.dp, bottom = 10.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+                color = SpotifyColors.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
+                    color = SpotifyColors.White.copy(alpha = 0.85f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         Icon(Icons.Default.MusicNote, null, tint = Color.Black.copy(alpha = 0.25f), modifier = Modifier.size(48.dp).align(Alignment.BottomEnd).offset(x = 8.dp, y = 8.dp))
     }
 }
@@ -1438,6 +1456,68 @@ private fun formatSleepRemaining(millis: Long): String {
 }
 
 // ==================== SHIMMER - статичный без бесконечной анимации ====================
+// ==================== КНОПКА СКАЧИВАНИЯ С ПРОГРЕССОМ ====================
+// Если трек(и) качаются: вокруг кнопки рисуется кольцо прогресса,
+// а сама иконка меняется на крестик — тап отменяет скачивание.
+@Composable
+fun DownloadProgressButton(
+    isDownloading: Boolean,
+    progress: Float?,
+    isDownloaded: Boolean,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 28.dp,
+    iconSize: Dp = 22.dp
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .clickable { if (isDownloading) onCancel() else onDownload() },
+        contentAlignment = Alignment.Center
+    ) {
+        if (isDownloading) {
+            if (progress != null) {
+                CircularProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxSize(),
+                    color = SpotifyColors.Green,
+                    trackColor = SpotifyColors.Gray,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                CircularProgressIndicator(
+                    modifier = Modifier.fillMaxSize(),
+                    color = SpotifyColors.Green,
+                    trackColor = SpotifyColors.Gray,
+                    strokeWidth = 2.dp
+                )
+            }
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Отменить скачивание",
+                tint = SpotifyColors.White,
+                modifier = Modifier.size(14.dp)
+            )
+        } else if (isDownloaded) {
+            Icon(
+                Icons.Default.DownloadDone,
+                contentDescription = "Скачано",
+                tint = SpotifyColors.Green,
+                modifier = Modifier.size(iconSize)
+            )
+        } else {
+            Icon(
+                Icons.Default.DownloadForOffline,
+                contentDescription = "Скачать",
+                tint = SpotifyColors.LightGray,
+                modifier = Modifier.size(iconSize)
+            )
+        }
+    }
+}
+
 @Composable
 fun ShimmerPlaceholder(modifier: Modifier = Modifier, cornerRadius: Dp = 6.dp) {
     Box(modifier = modifier.clip(RoundedCornerShape(cornerRadius)).background(SpotifyColors.Gray.copy(alpha = 0.4f)))

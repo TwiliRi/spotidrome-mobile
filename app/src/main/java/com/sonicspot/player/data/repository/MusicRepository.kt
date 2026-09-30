@@ -335,6 +335,16 @@ class MusicRepository @Inject constructor(
         }
     }
 
+    // Все жанры библиотеки — для страницы поиска
+    suspend fun getGenres(forceRefresh: Boolean = false): Result<List<Genre>> = withContext(Dispatchers.IO) {
+        try {
+            val res = api.getGenres(cacheControl(forceRefresh))
+            Result.success(res.subsonicResponse.genres?.genre ?: emptyList())
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun getPlaylists(forceRefresh: Boolean = false): Result<List<Playlist>> = withContext(Dispatchers.IO) {
         try {
             val res = api.getPlaylists(cacheControl(forceRefresh || playlistsListDirty))

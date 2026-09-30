@@ -19,6 +19,7 @@ class DownloadedViewModel @Inject constructor(
 
     val downloaded = downloadStore.downloaded
     val inProgress = downloadStore.inProgress
+    val queue = downloadStore.queue
 
     private fun orderedSongs(): List<Song> =
         downloaded.value.values.sortedByDescending { it.addedAt }.map { it.toSong() }

@@ -13,7 +13,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.sonicspot.player.ui.screens.album.AlbumDetailScreen
 import com.sonicspot.player.ui.screens.artist.ArtistDetailScreen
+import com.sonicspot.player.ui.screens.artist.ArtistAlbumsScreen
+import com.sonicspot.player.ui.screens.artist.ReleaseTypes
 import com.sonicspot.player.ui.screens.downloads.DownloadedScreen
+import com.sonicspot.player.ui.screens.downloads.ActiveDownloadsScreen
 import com.sonicspot.player.ui.screens.favorites.FavoritesScreen
 import com.sonicspot.player.ui.screens.home.HomeScreen
 import com.sonicspot.player.ui.screens.library.LibraryScreen
@@ -34,6 +37,7 @@ sealed class Screen(val route: String) {
     object Memory : Screen("memory")
     object Favorites : Screen("favorites")
     object Downloads : Screen("downloads")
+    object ActiveDownloads : Screen("active_downloads")
     object Queue : Screen("queue")
     object RecentlyAdded : Screen("recently_added")
     object AlbumDetail : Screen("album/{albumId}") {
@@ -41,6 +45,9 @@ sealed class Screen(val route: String) {
     }
     object ArtistDetail : Screen("artist/{artistId}") {
         fun createRoute(artistId: String) = "artist/$artistId"
+    }
+    object ArtistAlbums : Screen("artist_albums/{artistId}/{releaseType}") {
+        fun createRoute(artistId: String, releaseType: String) = "artist_albums/$artistId/$releaseType"
     }
     object PlaylistDetail : Screen("playlist/{playlistId}") {
         fun createRoute(playlistId: String) = "playlist/$playlistId"
@@ -220,7 +227,23 @@ fun AppNavGraph(
                 slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeOut(tween(fadeDuration))
             }
         ) {
-            DownloadedScreen(onBack = { navController.popBackStack() })
+            DownloadedScreen(
+                onBack = { navController.popBackStack() },
+                onActiveDownloadsClick = { navController.navigate(Screen.ActiveDownloads.route) }
+            )
+        }
+
+        // Активные загрузки: что качается прямо сейчас, с прогрессом и отменой
+        composable(
+            Screen.ActiveDownloads.route,
+            enterTransition = {
+                slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeIn(tween(fadeDuration))
+            },
+            popExitTransition = {
+                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeOut(tween(fadeDuration))
+            }
+        ) {
+            ActiveDownloadsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -287,7 +310,42 @@ fun AppNavGraph(
             }
         ) { backStack ->
             val artistId = backStack.arguments?.getString("artistId") ?: ""
-            ArtistDetailScreen(artistId = artistId, onBack = { navController.popBackStack() })
+            ArtistDetailScreen(
+                artistId = artistId,
+                onBack = { navController.popBackStack() },
+                onAlbumClick = { id -> navController.navigate(Screen.AlbumDetail.createRoute(id)) },
+                onSeeAllAlbums = { releaseType -> navController.navigate(Screen.ArtistAlbums.createRoute(artistId, releaseType)) }
+            )
+        }
+
+        // Все релизы одного типа из профиля артиста (альбомы / EP / синглы / участие)
+        composable(
+            route = Screen.ArtistAlbums.route,
+            arguments = listOf(
+                navArgument("artistId") { type = NavType.StringType },
+                navArgument("releaseType") { type = NavType.StringType }
+            ),
+            enterTransition = {
+                slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(slideDuration)) + fadeIn(tween(fadeDuration))
+            },
+            exitTransition = {
+                slideOutHorizontally(targetOffsetX = { -it / 3 }, animationSpec = tween(slideDuration)) + fadeOut(tween(fadeDuration))
+            },
+            popEnterTransition = {
+                slideInHorizontally(initialOffsetX = { -it / 3 }, animationSpec = tween(slideDuration)) + fadeIn(tween(fadeDuration))
+            },
+            popExitTransition = {
+                slideOutHorizontally(targetOffsetX = { it / 2 }, animationSpec = tween(slideDuration)) + fadeOut(tween(fadeDuration))
+            }
+        ) { backStackEntry ->
+            val artistId = backStackEntry.arguments?.getString("artistId") ?: return@composable
+            val releaseType = backStackEntry.arguments?.getString("releaseType") ?: ReleaseTypes.ALBUMS
+            ArtistAlbumsScreen(
+                artistId = artistId,
+                releaseType = releaseType,
+                onBack = { navController.popBackStack() },
+                onAlbumClick = { id -> navController.navigate(Screen.AlbumDetail.createRoute(id)) }
+            )
         }
 
         composable(

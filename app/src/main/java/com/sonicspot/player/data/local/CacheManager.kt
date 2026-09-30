@@ -41,8 +41,18 @@ data class CacheItem(
     val title: String,
     val subtitle: String,
     val sizeBytes: Long,
-    val icon: CacheType
+    val icon: CacheType,
+    /** Раздел экрана «Память»: данные приложения или кэш */
+    val section: MemorySection = MemorySection.CACHE,
+    /** Можно ли очистить эту категорию вручную */
+    val clearable: Boolean = true
 )
+
+/** Разделы на экране «Память». */
+enum class MemorySection {
+    DATA,
+    CACHE
+}
 
 enum class CacheType {
     LYRICS,
@@ -50,7 +60,13 @@ enum class CacheType {
     HOME,
     SEARCH,
     TEMP,
-    ALL
+    ALL,
+    DOWNLOADS,
+    DATA,
+    PLAYBACK,
+    OTHER,
+    EXTERNAL_CACHE,
+    CODE_CACHE
 }
 
 @Singleton
@@ -79,6 +95,71 @@ class CacheManager @Inject constructor(
 
     suspend fun refreshCacheInfo() = withContext(Dispatchers.IO) {
         val items = mutableListOf<CacheItem>()
+
+        // ===== Данные приложения (не кэш) =====
+
+        // Скачанная музыка (filesDir/downloaded)
+        val downloadsDir = File(context.filesDir, "downloaded")
+        val downloadsSize = getDirSize(downloadsDir)
+        val downloadsCount = downloadsDir.listFiles()?.count { it.isFile && it.name != "index.json" } ?: 0
+        items.add(
+            CacheItem(
+                id = "downloads",
+                title = "Скачанная музыка",
+                subtitle = "$downloadsCount треков • играют без интернета",
+                sizeBytes = downloadsSize,
+                icon = CacheType.DOWNLOADS,
+                section = MemorySection.DATA
+            )
+        )
+
+        // Настройки и данные (DataStore)
+        val datastoreDir = File(context.filesDir, "datastore")
+        val datastoreSize = getDirSize(datastoreDir)
+        val datastoreCount = datastoreDir.listFiles()?.size ?: 0
+        items.add(
+            CacheItem(
+                id = "datastore",
+                title = "Настройки и данные",
+                subtitle = "$datastoreCount файлов • учётная запись, настройки, история, плейлисты",
+                sizeBytes = datastoreSize,
+                icon = CacheType.DATA,
+                section = MemorySection.DATA,
+                clearable = false
+            )
+        )
+
+        // Кэш воспроизведения ExoPlayer (noBackupFilesDir/audio_cache)
+        val playbackDir = File(context.noBackupFilesDir, "audio_cache")
+        val playbackSize = getDirSize(playbackDir)
+        items.add(
+            CacheItem(
+                id = "playback",
+                title = "Кэш воспроизведения",
+                subtitle = "Потоковое аудио ExoPlayer • до 150 МБ • чистится автоматически (LRU)",
+                sizeBytes = playbackSize,
+                icon = CacheType.PLAYBACK,
+                section = MemorySection.DATA,
+                clearable = false
+            )
+        )
+
+        // Прочие файлы приложения (filesDir без скачанного и datastore)
+        val filesTotal = getDirSize(context.filesDir)
+        val otherFilesSize = (filesTotal - downloadsSize - datastoreSize).coerceAtLeast(0L)
+        items.add(
+            CacheItem(
+                id = "other_files",
+                title = "Прочие файлы приложения",
+                subtitle = "Служебные данные плеера",
+                sizeBytes = otherFilesSize,
+                icon = CacheType.OTHER,
+                section = MemorySection.DATA,
+                clearable = false
+            )
+        )
+
+        // ===== Кэш приложения =====
 
         // Lyrics cache
         val lyricsSize = getDirSize(lyricsDir)
@@ -110,7 +191,7 @@ class CacheManager @Inject constructor(
             )
         )
 
-        // Home cache - главная как в Twitch
+        // Home cache - кэш главной страницы
         val homeSize = if (homeCacheFile.exists()) homeCacheFile.length() else 0L
         val homeAge = if (homeCacheFile.exists()) {
             val ageHours = (System.currentTimeMillis() - homeCacheFile.lastModified()) / (1000 * 60 * 60)
@@ -122,7 +203,7 @@ class CacheManager @Inject constructor(
             CacheItem(
                 id = "home",
                 title = "Главная страница",
-                subtitle = "Кэш как в Twitch • $homeAge • мгновенная загрузка",
+                subtitle = "$homeAge • открывает главную мгновенно",
                 sizeBytes = homeSize,
                 icon = CacheType.HOME
             )
@@ -149,6 +230,31 @@ class CacheManager @Inject constructor(
                 subtitle = "Логи, временные данные",
                 sizeBytes = tempSize.coerceAtLeast(0),
                 icon = CacheType.TEMP
+            )
+        )
+
+        // Внешний кэш (externalCacheDir)
+        val externalCacheSize = context.externalCacheDir?.let { getDirSize(it) } ?: 0L
+        items.add(
+            CacheItem(
+                id = "external_cache",
+                title = "Внешний кэш",
+                subtitle = "Общий кэш во внешнем хранилище устройства",
+                sizeBytes = externalCacheSize,
+                icon = CacheType.EXTERNAL_CACHE
+            )
+        )
+
+        // Кэш кода (codeCacheDir)
+        val codeCacheSize = getDirSize(context.codeCacheDir)
+        items.add(
+            CacheItem(
+                id = "code_cache",
+                title = "Кэш кода",
+                subtitle = "Скомпилированный код • управляется системой",
+                sizeBytes = codeCacheSize,
+                icon = CacheType.CODE_CACHE,
+                clearable = false
             )
         )
 
@@ -185,6 +291,14 @@ class CacheManager @Inject constructor(
                 // Пересоздаем нужные папки
                 lyricsDir.mkdirs()
             }
+            CacheType.EXTERNAL_CACHE -> {
+                context.externalCacheDir?.deleteRecursively()
+                context.externalCacheDir?.mkdirs()
+            }
+            // Скачанная музыка чистится через DownloadStore (MemoryViewModel)
+            CacheType.DOWNLOADS -> { /* обрабатывается в MemoryViewModel */ }
+            // Эти категории нельзя чистить вручную — они не clearable
+            CacheType.DATA, CacheType.PLAYBACK, CacheType.OTHER, CacheType.CODE_CACHE -> { /* не очищается */ }
         }
         refreshCacheInfo()
     }
@@ -399,7 +513,7 @@ class CacheManager @Inject constructor(
         }
     }
 
-    // Home cache - как в Twitch: мгновенная загрузка без прогрузки
+    // Home cache: мгновенная загрузка главной без прогрузки
     // FIX: Детальный трейсинг чтобы найти почему 735ms на MAIN
     suspend fun saveHomeCache(data: CachedHomeData) = withContext(Dispatchers.IO) {
         try {

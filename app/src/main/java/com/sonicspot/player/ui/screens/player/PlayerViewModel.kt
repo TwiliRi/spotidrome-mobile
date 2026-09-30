@@ -11,6 +11,7 @@ import com.sonicspot.player.data.repository.LyricsResult
 import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.data.repository.StarredRepository
 import com.sonicspot.player.player.PlayerManager
+import com.sonicspot.player.util.buildArtistTokens
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
@@ -21,6 +22,8 @@ data class ArtistInfoState(
     val isLoading: Boolean = false,
     val artist: Artist? = null,
     val artistDetail: com.sonicspot.player.data.model.ArtistDetail? = null,
+    /** Идентификатор исполнителя текущего трека: из тега или найденный поиском по имени. */
+    val resolvedArtistId: String? = null,
     val topSongs: List<Song> = emptyList(),
     val albums: List<Album> = emptyList()
 )
@@ -233,30 +236,65 @@ class PlayerViewModel @Inject constructor(
     fun fetchArtistInfo(song: Song) {
         artistJob?.cancel()
         artistJob = viewModelScope.launch {
-            val artistName = song.artist ?: return@launch
-            val artistId = song.artistId
+            val displayArtist = song.artist ?: return@launch
             _artistInfo.value = ArtistInfoState(isLoading = true)
 
             try {
-                val topSongsDeferred = repository.getTopSongsForArtist(artistName, 10)
-                val artistDetailDeferred = if (artistId != null) {
-                    repository.getArtist(artistId)
-                } else null
+                // Основной исполнитель трека: для «A feat. B» это «A». Топ-треки и поиск id
+                // делаем по нему — поиск по всей строке с «feat.» не находит никого,
+                // и блок «Об исполнителе» оставался пустым.
+                val primaryName = buildArtistTokens(song).firstOrNull()?.name ?: displayArtist
+                val topSongsResult = repository.getTopSongsForArtist(primaryName, 10)
 
-                val topSongs = topSongsDeferred.getOrNull() ?: emptyList()
-                val artistDetail = artistDetailDeferred?.getOrNull()
+                // Если у трека нет artistId (радио-очередь, некоторые теги) — ищем артиста по имени,
+                // чтобы с плеера всегда можно было перейти на его страницу одним нажатием.
+                var artistId: String? = song.artistId
+                var foundArtist: Artist? = null
+                if (artistId == null) {
+                    val candidates = runCatching {
+                        repository.search(primaryName).getOrNull()?.artist
+                    }.getOrNull()
+                    val match = candidates?.firstOrNull { it.name.equals(primaryName, ignoreCase = true) }
+                        ?: candidates?.firstOrNull()
+                    if (match != null) {
+                        foundArtist = match
+                        artistId = match.id
+                    }
+                }
+                // val вместо захваченной лямбдой var — чтобы работал smart cast ниже
+                val resolvedId: String? = artistId
 
+                val artistDetail = if (resolvedId != null) repository.getArtist(resolvedId).getOrNull() else null
+
+                val topSongs = topSongsResult.getOrNull() ?: emptyList()
                 val albums = artistDetail?.album?.take(10) ?: emptyList()
 
                 _artistInfo.value = ArtistInfoState(
                     isLoading = false,
+                    artist = foundArtist,
                     artistDetail = artistDetail,
+                    resolvedArtistId = resolvedId ?: artistDetail?.id,
                     topSongs = topSongs.filterNot { it.id == song.id },
                     albums = albums
                 )
             } catch (e: Exception) {
                 _artistInfo.value = ArtistInfoState(isLoading = false)
             }
+        }
+    }
+
+    /**
+     * Ищет id исполнителя по имени — для перехода по клику на имя в плеере,
+     * когда у трека нет структурного id (старые серверы без OpenSubsonic).
+     */
+    suspend fun findArtistIdByName(name: String): String? {
+        if (name.isBlank()) return null
+        return try {
+            val artists = repository.search(name).getOrNull()?.artist ?: return null
+            artists.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
+                ?: artists.firstOrNull()?.id
+        } catch (_: Exception) {
+            null
         }
     }
 

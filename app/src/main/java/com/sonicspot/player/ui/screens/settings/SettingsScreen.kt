@@ -154,8 +154,7 @@ fun SettingsScreen(
                     SettingsRow(
                         icon = Icons.Default.PushPin,
                         title = "Закрепленные плейлисты",
-                        subtitle = "${state.pinnedCount} закреплено",
-                        onClick = {}
+                        subtitle = "${state.pinnedCount} закреплено"
                     )
                     HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsActionRow(
@@ -181,8 +180,7 @@ fun SettingsScreen(
                     SettingsRow(
                         icon = Icons.Default.ThumbDown,
                         title = "Исключено треков",
-                        subtitle = "${state.dislikedCount} треков в списке",
-                        onClick = {}
+                        subtitle = "${state.dislikedCount} треков в списке"
                     )
                     HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsActionRow(
@@ -195,40 +193,6 @@ fun SettingsScreen(
                 }
             }
 
-            // Уведомления - как в Spotify с обложкой
-            item {
-                SettingsSectionHeader("Уведомления")
-                SettingsCard {
-                    SettingsRow(
-                        icon = Icons.Default.Notifications,
-                        title = "Медиа-уведомление",
-                        subtitle = "Обложка как в Spotify • управление из шторки",
-                        onClick = {}
-                    )
-                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsRow(
-                        icon = Icons.Default.ThumbDown,
-                        title = "Исключить — слева",
-                        subtitle = "Кнопка исключения левее всех в уведомлении",
-                        onClick = {}
-                    )
-                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsRow(
-                        icon = Icons.Default.Favorite,
-                        title = "Избранное — справа",
-                        subtitle = "Кнопка избранного правее всех в уведомлении",
-                        onClick = {}
-                    )
-                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsRow(
-                        icon = Icons.Default.Shuffle,
-                        title = "Перемешивание в уведомлении",
-                        subtitle = "Вкл/выкл случайной последовательности из шторки",
-                        onClick = {}
-                    )
-                }
-            }
-
             // Память - как в Spotify storage
             item {
                 SettingsSectionHeader("Хранилище")
@@ -236,7 +200,7 @@ fun SettingsScreen(
                     SettingsRow(
                         icon = Icons.Default.Storage,
                         title = "Память",
-                        subtitle = "Кэш текстов, обложек, главной • как в Twitch",
+                        subtitle = "Скачанная музыка, кэш и данные • всё, что занимает место",
                         onClick = onMemoryClick
                     )
                 }

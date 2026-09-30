@@ -3,6 +3,28 @@ package com.sonicspot.player.data.model
 import androidx.compose.runtime.Immutable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.nullable
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
+
+/**
+ * Толерантный парсер списка типов релиза: OpenSubsonic описывает releaseTypes как массив строк,
+ * но некоторые серверы могут отдать одиночную строку — оборачиваем её в список.
+ */
+object LenientStringListSerializer : JsonTransformingSerializer<List<String>?>(
+    ListSerializer(String.serializer()).nullable
+) {
+    override fun transformDeserialize(element: JsonElement): JsonElement = when (element) {
+        is JsonArray -> element
+        is JsonPrimitive -> if (element.isString) JsonArray(listOf(element)) else JsonNull
+        else -> JsonNull
+    }
+}
 
 // FIX: @Immutable для Compose - помогает компилятору понять что объекты стабильны
 // Spotify использует immutable модели чтобы избежать лишних рекомпозиций
@@ -27,6 +49,7 @@ data class SubsonicData(
     val album: AlbumDetail? = null,
     val albumList2: AlbumList2? = null,
     val searchResult3: SearchResult3? = null,
+    val genres: GenresContainer? = null,
     val playlists: PlaylistsContainer? = null,
     val playlist: PlaylistDetail? = null,
     val randomSongs: RandomSongs? = null,
@@ -81,6 +104,16 @@ data class ArtistDetail(
     val albumCount: Int = 0
 )
 
+/**
+ * Краткая ссылка на исполнителя (OpenSubsonic: массивы artists / albumArtists у трека и альбома).
+ */
+@Immutable
+@Serializable
+data class ArtistRef(
+    val id: String = "",
+    val name: String = ""
+)
+
 @Serializable
 data class AlbumList2(
     val album: List<Album> = emptyList()
@@ -100,8 +133,20 @@ data class Album(
     val created: String? = null,
     val year: Int? = null,
     val genre: String? = null,
-    val starred: String? = null
+    val starred: String? = null,
+    // OpenSubsonic (Navidrome): типы релиза из тегов RELEASETYPE / MusicBrainz Album Type.
+    // null, если сервер их не присылает — тогда тип определяется эвристикой.
+    val isCompilation: Boolean? = null,
+    val releaseType: String? = null,
+    @Serializable(with = LenientStringListSerializer::class)
+    val releaseTypes: List<String>? = null
 )
+
+/**
+ * Тип релиза для дискографии артиста: альбом, EP, сингл.
+ * Appears On вычисляется отдельно (артист не является основным исполнителем релиза).
+ */
+enum class ReleaseKind { ALBUM, EP, SINGLE }
 
 @Immutable
 @Serializable
@@ -142,7 +187,10 @@ data class Song(
     val suffix: String? = null,
     val contentType: String? = null,
     val isDir: Boolean = false,
-    val discNumber: Int? = null
+    val discNumber: Int? = null,
+    // OpenSubsonic: исполнители трека со своими id — для перехода по клику на каждое имя в плеере.
+    // У серверов без OpenSubsonic поле отсутствует — тогда имена разбираются из строки song.artist.
+    val artists: List<ArtistRef>? = null
 ) {
     val isStarred: Boolean get() = starred != null
 }
@@ -183,6 +231,20 @@ data class PlaylistDetail(
     /** Владелец плейлиста с сервера (атрибут owner в getPlaylist.view). */
     val owner: String? = null,
     val entry: List<Song> = emptyList()
+)
+
+// getGenres: Subsonic кладёт имя жанра в текст XML-элемента, поэтому в JSON оно приходит в поле "value"
+@Serializable
+data class GenresContainer(
+    val genre: List<Genre> = emptyList()
+)
+
+@Immutable
+@Serializable
+data class Genre(
+    val value: String = "",
+    val songCount: Int = 0,
+    val albumCount: Int = 0
 )
 
 @Serializable

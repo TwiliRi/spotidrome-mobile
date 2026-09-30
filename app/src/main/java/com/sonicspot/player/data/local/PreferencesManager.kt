@@ -40,6 +40,7 @@ class PreferencesManager @Inject constructor(
     private val selectedMusicFolderIdKey = intPreferencesKey("selected_music_folder_id")
     private val searchHistoryJsonKey = stringPreferencesKey("search_history_json")
     private val searchHistoryVersionKey = intPreferencesKey("search_history_version")
+    private val searchListensJsonKey = stringPreferencesKey("search_listens_json")
     private val notificationButtonsKey = stringSetPreferencesKey("notification_buttons")
     private val librarySwitcherModeKey = stringPreferencesKey("library_switcher_mode")
     private val randomTrackAnimKey = stringPreferencesKey("random_track_anim")
@@ -70,6 +71,7 @@ class PreferencesManager @Inject constructor(
     val playQueueSyncFlow: Flow<Boolean> = context.dataStore.data.map { prefs -> prefs[playQueueSyncKey] ?: true }
     val selectedMusicFolderIdFlow: Flow<Int?> = context.dataStore.data.map { prefs -> prefs[selectedMusicFolderIdKey] }
     val searchHistoryJsonFlow: Flow<String> = context.dataStore.data.map { prefs -> prefs[searchHistoryJsonKey] ?: "[]" }
+    val searchListensJsonFlow: Flow<String> = context.dataStore.data.map { prefs -> prefs[searchListensJsonKey] ?: "[]" }
 
     // Состав кнопок в шторке уведомления: любые комбинации лайк/дизлайк/шамбл
     val notificationButtonsFlow: Flow<Set<String>> = context.dataStore.data.map { prefs ->
@@ -195,6 +197,15 @@ class PreferencesManager @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs[searchHistoryJsonKey] = "[]"
         }
+    }
+
+    // Прослушанное из поиска: треки и исполнители, по которым реально кликали и слушали
+    suspend fun saveSearchListensJson(json: String) {
+        context.dataStore.edit { prefs -> prefs[searchListensJsonKey] = json }
+    }
+
+    suspend fun clearSearchListens() {
+        context.dataStore.edit { prefs -> prefs[searchListensJsonKey] = "[]" }
     }
 
     suspend fun clear() { context.dataStore.edit { it.clear() } }

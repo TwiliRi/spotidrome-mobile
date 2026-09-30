@@ -238,7 +238,14 @@ class MainActivity : ComponentActivity() {
                     BackHandler(enabled = showFullPlayer) {
                         showFullPlayer = false
                     }
-                    FullPlayerScreen(onClose = { showFullPlayer = false })
+                    FullPlayerScreen(
+                        onClose = { showFullPlayer = false },
+                        // Переход к исполнителю прямо из плеера (тап по имени под треком)
+                        onArtistClick = { artistId ->
+                            showFullPlayer = false
+                            navController.navigate(Screen.ArtistDetail.createRoute(artistId))
+                        }
+                    )
                 }
 
                 // «Чёрная дыра» — самый верхний слой: тап или «назад» прерывает бросок

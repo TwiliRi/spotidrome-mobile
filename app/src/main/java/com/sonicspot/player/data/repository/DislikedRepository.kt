@@ -181,6 +181,14 @@ class DislikedRepository @Inject constructor(
 
     suspend fun addToExcluded(songId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            // ВЗАИМОИСКЛЮЧЕНИЕ: лайк и дизлайк не могут стоять одновременно.
+            // Ставим дизлайк — снимаем лайк (и локально, и на сервере).
+            try {
+                if (prefs.likedIdsFlow.first().contains(songId)) {
+                    prefs.removeLikedId(songId)
+                    musicRepository.unstar(songId)
+                }
+            } catch (_: Exception) {}
             prefs.addDislikedId(songId)
             val playlistResult = getOrCreateExcludedPlaylist()
             val playlist = playlistResult.getOrNull() ?: return@withContext Result.success(true)

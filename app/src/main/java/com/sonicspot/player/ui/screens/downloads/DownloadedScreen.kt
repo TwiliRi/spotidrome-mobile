@@ -27,11 +27,13 @@ import com.sonicspot.player.ui.theme.*
 @Composable
 fun DownloadedScreen(
     onBack: () -> Unit,
+    onActiveDownloadsClick: () -> Unit = {},
     viewModel: DownloadedViewModel = hiltViewModel()
 ) {
     BackHandler(onBack = onBack)
     val downloadedMap by viewModel.downloaded.collectAsState()
     val inProgress by viewModel.inProgress.collectAsState()
+    val queued by viewModel.queue.collectAsState()
     val currentSong by viewModel.playerManager.currentSongFlow.collectAsState()
 
     val entries = remember(downloadedMap) { downloadedMap.values.sortedByDescending { it.addedAt } }
@@ -114,15 +116,28 @@ fun DownloadedScreen(
                     onDelete = { entryToDelete = entry }
                 )
             }
-            if (inProgress.isNotEmpty()) {
-                item {
+            if (inProgress.isNotEmpty() || queued.isNotEmpty()) {
+                item(key = "active_downloads_hint") {
+                    // Кликабельная карточка активных загрузок — ведёт на страницу «Скачивается»
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SpotifyColors.Gray.copy(alpha = 0.4f))
+                            .clickable { onActiveDownloadsClick() }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = SpotifyColors.Green)
-                        Text("Скачивается ещё ${inProgress.size}…", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "Сейчас скачивается: ${inProgress.size}" + if (queued.isNotEmpty()) " • в очереди: ${queued.size}" else "",
+                            color = SpotifyColors.White,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Icon(Icons.Default.ChevronRight, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(20.dp))
                     }
                 }
             }

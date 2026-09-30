@@ -26,6 +26,7 @@ import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.ui.components.ProvidePauseImageLoadsDuringScroll
 import com.sonicspot.player.ui.components.RemoveLikeBottomSheet
 import com.sonicspot.player.ui.components.AddToPlaylistHost
+import com.sonicspot.player.ui.components.DownloadProgressButton
 import com.sonicspot.player.ui.components.SongOptionsSheet
 import com.sonicspot.player.ui.components.SongRowModern
 import com.sonicspot.player.ui.playlistadd.AddToPlaylistViewModel
@@ -44,6 +45,8 @@ fun FavoritesScreen(
     val state by viewModel.uiState.collectAsState()
     val currentSongId by viewModel.playerManager.currentSongFlow.collectAsState()
     val likedIds by viewModel.likedIds.collectAsState()
+    val downloadedMap by viewModel.downloadedMap.collectAsState()
+    val activeDownloads by viewModel.activeDownloads.collectAsState()
     val dislikedIds by viewModel.dislikedIds.collectAsState()
     // Шторка «Добавить в плейлист» и меню трека «…» — общие для всех экранов с треками
     val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
@@ -124,9 +127,21 @@ fun FavoritesScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                                Box(modifier = Modifier.size(28.dp).clickable { }, contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.DownloadForOffline, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(24.dp))
-                                }
+                                val downloadedCount = state.songs.count { downloadedMap.containsKey(it.id) }
+                                val allDownloaded = state.songs.isNotEmpty() && downloadedCount == state.songs.size
+                                val activeInFavorites = activeDownloads.values.filter { a -> state.songs.any { s -> s.id == a.song.id } }
+                                val favoritesProgress = if (activeInFavorites.isEmpty() || state.songs.isEmpty()) null
+                                else if (activeInFavorites.any { it.progress == null }) null
+                                else (downloadedCount + activeInFavorites.sumOf { (it.progress ?: 0f).toDouble() }) / state.songs.size
+                                DownloadProgressButton(
+                                    isDownloading = activeInFavorites.isNotEmpty(),
+                                    progress = favoritesProgress?.toFloat()?.coerceIn(0f, 1f),
+                                    isDownloaded = allDownloaded,
+                                    onDownload = { viewModel.downloadAll() },
+                                    onCancel = { viewModel.cancelDownloads() },
+                                    size = 28.dp,
+                                    iconSize = 24.dp
+                                )
                                 Box(modifier = Modifier.size(28.dp).clickable { }, contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.Share, null, tint = SpotifyColors.LightGray, modifier = Modifier.size(20.dp))
                                 }
@@ -148,17 +163,14 @@ fun FavoritesScreen(
             }
 
             item {
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Треки • ${state.visibleSongs.size} из ${state.totalCount}", style = MaterialTheme.typography.bodySmall.copy(color = SpotifyColors.White, fontWeight = FontWeight.Bold, fontSize = 12.sp))
-                    if (state.hasMore) Text("Ещё ${state.remainingCount}", style = MaterialTheme.typography.bodySmall.copy(color = SpotifyColors.Green, fontSize = 11.sp))
-                }
+                // Счётчики «X из Y» убраны: треки подгружаются автоматически по мере скролла
                 HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.2f), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 16.dp))
                 Spacer(Modifier.height(4.dp))
             }
 
             itemsIndexed(state.visibleSongs, key = { _, song -> song.id }, contentType = { _, _ -> "song" }) { index, song ->
                 val isPlaying = currentSongId?.id == song.id
-                val isLiked = likedIds.contains(song.id) || song.isStarred
+                val isLiked = (likedIds.contains(song.id) || song.isStarred) && !dislikedIds.contains(song.id)
                 val isDisliked = dislikedIds.contains(song.id)
                 val coverUrl = remember(song.coverArt) { viewModel.getCoverUrl(song.coverArt, 88) }
                 SongRowModern(
@@ -217,7 +229,7 @@ fun FavoritesScreen(
         SongOptionsSheet(
             song = songMenu,
             coverUrl = viewModel.getCoverUrl(songMenu?.coverArt, 112),
-            isLiked = songMenu?.let { likedIds.contains(it.id) || it.isStarred } == true,
+            isLiked = songMenu?.let { (likedIds.contains(it.id) || it.isStarred) && !dislikedIds.contains(it.id) } == true,
             isDisliked = songMenu?.let { dislikedIds.contains(it.id) } == true,
             onDismiss = { songMenu = null },
             onAddToPlaylist = {

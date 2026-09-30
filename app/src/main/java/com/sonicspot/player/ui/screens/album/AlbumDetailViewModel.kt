@@ -7,6 +7,7 @@ import com.sonicspot.player.data.model.AlbumDetail
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
+import com.sonicspot.player.data.local.DownloadStore
 import com.sonicspot.player.data.repository.StarredRepository
 import com.sonicspot.player.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,13 +37,17 @@ class AlbumDetailViewModel @Inject constructor(
     private val repository: MusicRepository,
     val playerManager: PlayerManager,
     private val dislikedRepository: DislikedRepository,
-    private val starredRepository: StarredRepository
+    private val starredRepository: StarredRepository,
+    private val downloadStore: DownloadStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AlbumDetailUiState())
     val uiState: StateFlow<AlbumDetailUiState> = _uiState.asStateFlow()
     val dislikedIds = dislikedRepository.dislikedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val likedIds = starredRepository.likedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val downloadedMap = downloadStore.downloaded
+    val activeDownloads = downloadStore.activeDownloads
 
     companion object {
         const val PAGE_SIZE = 20
@@ -67,6 +72,18 @@ class AlbumDetailViewModel @Inject constructor(
             val newCount = (current.visibleCount + PAGE_SIZE).coerceAtMost(total)
             _uiState.value = current.copy(visibleCount = newCount)
         }
+    }
+
+    /** Скачивает все треки альбома в фоне — продолжается даже после ухода с экрана. */
+    fun downloadAll() {
+        val songs = _uiState.value.album?.song ?: return
+        downloadStore.downloadAll(songs)
+    }
+
+    /** Отменяет скачивание треков этого альбома: очередь + активные загрузки. */
+    fun cancelDownloads() {
+        val ids = _uiState.value.album?.song?.map { it.id }?.toSet() ?: return
+        downloadStore.cancelDownloads(ids)
     }
 
     init {

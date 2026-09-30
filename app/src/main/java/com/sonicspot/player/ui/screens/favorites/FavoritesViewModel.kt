@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.sonicspot.player.data.model.Song
 import com.sonicspot.player.data.repository.DislikedRepository
 import com.sonicspot.player.data.repository.MusicRepository
+import com.sonicspot.player.data.local.DownloadStore
 import com.sonicspot.player.data.repository.StarredRepository
 import com.sonicspot.player.player.PlayerManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,13 +36,31 @@ class FavoritesViewModel @Inject constructor(
     private val repository: MusicRepository,
     val playerManager: PlayerManager,
     private val dislikedRepository: DislikedRepository,
-    private val starredRepository: StarredRepository
+    private val starredRepository: StarredRepository,
+    private val downloadStore: DownloadStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FavoritesUiState())
     val uiState: StateFlow<FavoritesUiState> = _uiState.asStateFlow()
     val dislikedIds = dislikedRepository.dislikedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val likedIds = starredRepository.likedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val downloadedMap = downloadStore.downloaded
+    val activeDownloads = downloadStore.activeDownloads
+
+    /** Скачивает все любимые треки в фоне — продолжается даже после ухода с экрана. */
+    fun downloadAll() {
+        val songs = _uiState.value.songs
+        if (songs.isEmpty()) return
+        downloadStore.downloadAll(songs)
+    }
+
+    /** Отменяет скачивание любимых треков: очередь + активные загрузки. */
+    fun cancelDownloads() {
+        val ids = _uiState.value.songs.map { it.id }.toSet()
+        downloadStore.cancelDownloads(ids)
+    }
+
 
     companion object {
         const val PAGE_SIZE = 20

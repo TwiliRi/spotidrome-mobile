@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.data.local.CacheType
+import com.sonicspot.player.data.local.MemorySection
 import com.sonicspot.player.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -38,6 +39,8 @@ fun MemoryScreen(
     var showClearDialog by remember { mutableStateOf<CacheType?>(null) }
 
     val totalSize = remember(cacheItems) { cacheItems.sumOf { it.sizeBytes } }
+    val dataItems = remember(cacheItems) { cacheItems.filter { it.section == MemorySection.DATA } }
+    val cacheOnlyItems = remember(cacheItems) { cacheItems.filter { it.section == MemorySection.CACHE } }
 
     Scaffold(
         topBar = {
@@ -93,27 +96,50 @@ fun MemoryScreen(
                             Box(modifier = Modifier.fillMaxWidth(progress).height(6.dp).clip(RoundedCornerShape(3.dp)).background(SpotifyColors.Green))
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text("${cacheItems.size} категорий • кэшируется как в Twitch для мгновенной загрузки", color = SpotifyColors.MediumGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
+                        Text("${cacheItems.size} категорий • все данные приложения", color = SpotifyColors.MediumGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
                     }
                 }
             }
 
-            item {
-                Text("КЭШ ПРИЛОЖЕНИЯ", color = SpotifyColors.LightGray, style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            if (dataItems.isNotEmpty()) {
+                item {
+                    Text("ДАННЫЕ ПРИЛОЖЕНИЯ", color = SpotifyColors.LightGray, style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                }
+                items(dataItems, key = { it.id }) { item ->
+                    MemoryCacheRow(
+                        title = item.title,
+                        subtitle = item.subtitle,
+                        size = viewModel.formatSize(item.sizeBytes),
+                        sizeBytes = item.sizeBytes,
+                        icon = getIconForType(item.icon),
+                        iconTint = getColorForType(item.icon),
+                        clearable = item.clearable,
+                        onClear = { showClearDialog = item.icon },
+                        modifier = Modifier
+                    )
+                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.2f), modifier = Modifier.padding(horizontal = 16.dp))
+                }
             }
 
-            items(cacheItems, key = { it.id }) { item ->
-                MemoryCacheRow(
-                    title = item.title,
-                    subtitle = item.subtitle,
-                    size = viewModel.formatSize(item.sizeBytes),
-                    sizeBytes = item.sizeBytes,
-                    icon = getIconForType(item.icon),
-                    iconTint = getColorForType(item.icon),
-                    onClear = { showClearDialog = item.icon },
-                    modifier = Modifier
-                )
-                HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.2f), modifier = Modifier.padding(horizontal = 16.dp))
+            if (cacheOnlyItems.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    Text("КЭШ ПРИЛОЖЕНИЯ", color = SpotifyColors.LightGray, style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                }
+                items(cacheOnlyItems, key = { it.id }) { item ->
+                    MemoryCacheRow(
+                        title = item.title,
+                        subtitle = item.subtitle,
+                        size = viewModel.formatSize(item.sizeBytes),
+                        sizeBytes = item.sizeBytes,
+                        icon = getIconForType(item.icon),
+                        iconTint = getColorForType(item.icon),
+                        clearable = item.clearable,
+                        onClear = { showClearDialog = item.icon },
+                        modifier = Modifier
+                    )
+                    HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.2f), modifier = Modifier.padding(horizontal = 16.dp))
+                }
             }
 
             item {
@@ -129,7 +155,7 @@ fun MemoryScreen(
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Очистить всё", color = SpotifyColors.Red, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                            Text("Удалить весь кэш • ${viewModel.formatTotal()}", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
+                            Text("Удалить весь кэш • ${viewModel.formatCacheTotal()} • музыка и настройки не тронет", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
                         }
                         Icon(Icons.Default.ChevronRight, null, tint = SpotifyColors.Red.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
                     }
@@ -137,19 +163,6 @@ fun MemoryScreen(
             }
 
             item {
-                Spacer(Modifier.height(24.dp))
-                Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(12.dp)).background(SpotifyColors.Gray.copy(alpha = 0.5f)).padding(16.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.Lightbulb, null, tint = SpotifyColors.Green, modifier = Modifier.size(16.dp))
-                            Text("Как работает кэш как в Twitch", color = SpotifyColors.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp))
-                        }
-                        Text("• Главная страница кэшируется на 24ч и открывается мгновенно без прогрузки", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp))
-                        Text("• Тексты песен кэшируются навсегда на диске + в памяти — без лишних запросов к API", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp))
-                        Text("• Обложки кэшируются Coil и не перезагружаются при скролле", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp))
-                        Text("• Pull-to-refresh насильно обновляет данные с анимацией Spotify", color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 14.sp))
-                    }
-                }
                 Spacer(Modifier.height(32.dp))
             }
         }
@@ -169,7 +182,9 @@ fun MemoryScreen(
                         CacheType.LYRICS -> "Все сохраненные тексты будут удалены. При следующем воспроизведении они загрузятся заново с LRCLIB/встроенных."
                         CacheType.COVERS -> "Кэш обложек будет очищен. Картинки перезагрузятся при скролле."
                         CacheType.HOME -> "Кэш главной страницы будет удален. При следующем открытии главная загрузится с сервера."
-                        CacheType.ALL -> "Весь кэш приложения будет удален (${viewModel.formatTotal()}). Это действие нельзя отменить."
+                        CacheType.DOWNLOADS -> "Все скачанные треки будут удалены с устройства, память освободится. Скачать их можно будет заново с сервера."
+                        CacheType.EXTERNAL_CACHE -> "Внешний кэш будет очищен. При необходимости данные перезагрузятся."
+                        CacheType.ALL -> "Весь кэш приложения будет удален (${viewModel.formatCacheTotal()}). Скачанная музыка, настройки и данные не пострадают. Это действие нельзя отменить."
                         else -> "Кэш будет очищен."
                     }
                 )
@@ -194,6 +209,7 @@ private fun MemoryCacheRow(
     sizeBytes: Long,
     icon: ImageVector,
     iconTint: androidx.compose.ui.graphics.Color,
+    clearable: Boolean = true,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -210,8 +226,10 @@ private fun MemoryCacheRow(
         Spacer(Modifier.width(12.dp))
         Column(horizontalAlignment = Alignment.End) {
             Text(size, color = SpotifyColors.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp))
-            TextButton(onClick = onClear, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp), modifier = Modifier.height(24.dp)) {
-                Text("Очистить", color = SpotifyColors.MediumGray, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
+            if (clearable) {
+                TextButton(onClick = onClear, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp), modifier = Modifier.height(24.dp)) {
+                    Text("Очистить", color = SpotifyColors.MediumGray, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
+                }
             }
         }
     }
@@ -224,6 +242,12 @@ private fun getIconForType(type: CacheType): ImageVector = when (type) {
     CacheType.SEARCH -> Icons.Default.Search
     CacheType.TEMP -> Icons.Default.Folder
     CacheType.ALL -> Icons.Default.DeleteForever
+    CacheType.DOWNLOADS -> Icons.Default.DownloadForOffline
+    CacheType.DATA -> Icons.Default.Tune
+    CacheType.PLAYBACK -> Icons.Default.GraphicEq
+    CacheType.OTHER -> Icons.Default.FolderOpen
+    CacheType.EXTERNAL_CACHE -> Icons.Default.SdStorage
+    CacheType.CODE_CACHE -> Icons.Default.Code
 }
 
 private fun getColorForType(type: CacheType): androidx.compose.ui.graphics.Color = when (type) {
@@ -233,6 +257,12 @@ private fun getColorForType(type: CacheType): androidx.compose.ui.graphics.Color
     CacheType.SEARCH -> androidx.compose.ui.graphics.Color(0xFFE8115B)
     CacheType.TEMP -> SpotifyColors.MediumGray
     CacheType.ALL -> SpotifyColors.Red
+    CacheType.DOWNLOADS -> SpotifyColors.Green
+    CacheType.DATA -> androidx.compose.ui.graphics.Color(0xFF8E8EE5)
+    CacheType.PLAYBACK -> androidx.compose.ui.graphics.Color(0xFF477D95)
+    CacheType.OTHER -> SpotifyColors.MediumGray
+    CacheType.EXTERNAL_CACHE -> androidx.compose.ui.graphics.Color(0xFFE8115B)
+    CacheType.CODE_CACHE -> androidx.compose.ui.graphics.Color(0xFFBA5D07)
 }
 
 private fun getTitleForType(type: CacheType): String = when (type) {
@@ -242,4 +272,10 @@ private fun getTitleForType(type: CacheType): String = when (type) {
     CacheType.SEARCH -> "поиск"
     CacheType.TEMP -> "временные файлы"
     CacheType.ALL -> "весь кэш"
+    CacheType.DOWNLOADS -> "скачанную музыку"
+    CacheType.DATA -> "данные приложения"
+    CacheType.PLAYBACK -> "кэш воспроизведения"
+    CacheType.OTHER -> "прочие файлы"
+    CacheType.EXTERNAL_CACHE -> "внешний кэш"
+    CacheType.CODE_CACHE -> "кэш кода"
 }
