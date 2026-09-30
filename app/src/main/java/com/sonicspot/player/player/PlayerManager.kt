@@ -1,7 +1,12 @@
 package com.sonicspot.player.player
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
@@ -9,6 +14,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.sonicspot.player.data.local.PreferencesManager
@@ -43,6 +49,19 @@ enum class RadioMode {
     ARTIST
 }
 
+/**
+ * Вариант аудиовыхода для меню «через что играть»: динамик, проводные/USB-наушники
+ * или Bluetooth-гарнитура. id — системный AudioDeviceInfo.id.
+ */
+data class AudioOutputOption(
+    /** Системный id — меняется при каждом переподключении, только для журнала. */
+    val deviceId: Int,
+    val type: Int,
+    val label: String,
+    /** Стабильный ключ «тип + имя» — по нему узнаём устройство после переподключения. */
+    val key: String
+)
+
 sealed class SleepTimerState {
     object Off : SleepTimerState()
     data class Active(
@@ -70,6 +89,16 @@ class PlayerManager @Inject constructor(
 
     private val _sleepTimerState = MutableStateFlow<SleepTimerState>(SleepTimerState.Off)
     val sleepTimerState: StateFlow<SleepTimerState> = _sleepTimerState.asStateFlow()
+
+    private val _audioOutputs = MutableStateFlow<List<AudioOutputOption>>(emptyList())
+    val audioOutputs: StateFlow<List<AudioOutputOption>> = _audioOutputs.asStateFlow()
+
+    /**
+     * Ключ выбранного вывода звука («тип + имя»). null — ничего не выбрано,
+     * вывод решает система. Ключ стабилен между переподключениями устройства.
+     */
+    private val _selectedAudioOutputKey = MutableStateFlow<String?>(null)
+    val selectedAudioOutputKey: StateFlow<String?> = _selectedAudioOutputKey.asStateFlow()
 
     private val _playerState = MutableStateFlow(PlayerState())
     val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
@@ -135,6 +164,288 @@ class PlayerManager @Inject constructor(
     // и когда музыка играет, и когда стоит. Без этого лог при «молчаливом» зависании пуст.
     private var lastHeartbeatMs: Long = 0L
 
+    // ==================== внешние прерывания ====================
+
+    /**
+     * Отключение наушников → остановка воспроизведения.
+     *
+     * Встроенный механизм ExoPlayer (setHandleAudioBecomingNoisy) здесь выключен
+     * сознательно: он глушит плеер на ЛЮБОЕ событие гарнитуры — включая фантомные
+     * «переговоры кодека» A2DP и смену дорожки, из-за чего музыка самопроизвольно
+     * останавливалась на Bluetooth. Этот же ресивер сверяет событие с реальным
+     * списком аудиовыходов: гарнитура всё ещё подключена — событие фантом, игнорируем;
+     * вывод действительно ушёл на динамик — останавливаемся.
+     */
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
+            val playing = try { exoPlayer?.isPlaying == true } catch (_: Exception) { false }
+            if (!playing && !userWantsPlayback) return
+            // Мы и так играли через динамик — «шумным» вывод стал не для нас
+            val route = lastRouteClass ?: effectiveRouteClass()
+            if (route == "auto:speaker" || route == "sel:speaker") return
+            if (audioStillRoutedToHeadset()) {
+                Log.i("PlayerManager", "AUDIO_BECOMING_NOISY игнорируем: звук всё ещё идёт в гарнитуру (фантом)")
+                return
+            }
+            // Играли (или звук вот-вот должен был пойти) — запоминаем:
+            // при следующем подключении наушников продолжим с того же места
+            pausedByHeadsetDisconnect = playing || userWantsPlayback
+            lastRouteClass = effectiveRouteClass()
+            pauseForInterruption("отключились наушники")
+        }
+    }
+
+    /**
+     * Фактически ли звук всё ещё идёт в гарнитуру. Для Bluetooth важен именно
+     * АКТИВНЫЙ A2DP-маршрут, а не присутствие устройства в списке: при выключении
+     * наушников профиль нередко «висит» в списке подключённых ещё несколько секунд —
+     * из-за этого прежняя проверка по списку пропускала реальное отключение.
+     */
+    private fun audioStillRoutedToHeadset(): Boolean {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        return try {
+            val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val wired = devices.any {
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+            }
+            val ble = devices.any { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }
+            val a2dpConnected = devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+            val a2dpRouteOn = try {
+                @Suppress("DEPRECATION")
+                am.isBluetoothA2dpOn
+            } catch (_: Exception) { true }
+            wired || ble || (a2dpConnected && a2dpRouteOn)
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * Воспроизведение остановлено снятием наушников — при следующем подключении
+     * гарнитуры продолжаем с того же места. Сбрасывается, как только музыка
+     * заиграла по любой другой причине (пользователь сам нажал play и т.п.).
+     */
+    private var pausedByHeadsetDisconnect = false
+
+    /** Первый вызов AudioDeviceCallback — снимок уже подключённых устройств, не событие. */
+    private var audioDeviceCallbackInitialized = false
+
+    /**
+     * Класс текущего маршрута звука: «sel:<ключ>» — играем через выбранное устройство,
+     * «auto:bt» / «auto:wired» / «auto:speaker» — маршрутизация системы. Меняется —
+     * значит устройство вывода сменилось: во время игры это повод для паузы.
+     */
+    private var lastRouteClass: String? = null
+
+    /**
+     * Подключение наушников → продолжить воспроизведение, остановленное при снятии.
+     * Ловится через AudioDeviceCallback: одинаково работает для проводных, USB
+     * и Bluetooth (A2DP/BLE) гарнитур.
+     */
+    private val headsetDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            refreshAudioOutputs()
+            if (!audioDeviceCallbackInitialized) {
+                audioDeviceCallbackInitialized = true
+                return
+            }
+            val headsetArrived = addedDevices.any { isHeadsetDevice(it.type) }
+            // Вернулось выбранное устройство вывода — направляем звук в него
+            if (headsetArrived && _selectedAudioOutputKey.value != null) {
+                applyPreferredOutput(exoPlayer)
+                applyPreferredOutput(crossfadePlayer)
+            }
+            // Подключение — не повод для паузы (наоборот: надел наушники — музыка
+            // продолжает), просто фиксируем новый маршрут
+            lastRouteClass = effectiveRouteClass()
+            if (!headsetArrived || !pausedByHeadsetDisconnect) return
+            pausedByHeadsetDisconnect = false
+            resumeFromHeadsetReconnect()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            refreshAudioOutputs()
+            // Выбранное устройство могло пропасть — переприменяем вывод к живым плеерам
+            if (_selectedAudioOutputKey.value != null) {
+                applyPreferredOutput(exoPlayer)
+                applyPreferredOutput(crossfadePlayer)
+            }
+            // Главная проверка: сменился ли фактический маршрут звука. Устройство,
+            // через которое играла музыка, отключилось (или маршрут переехал на
+            // другой выход) — останавливаем воспроизведение, чтобы звук не продолжался
+            // сам собой там, куда его перебросила система. При следующем подключении
+            // гарнитуры музыка продолжится.
+            val wasPlayingOrWanted = try {
+                exoPlayer?.isPlaying == true || userWantsPlayback
+            } catch (_: Exception) { userWantsPlayback }
+            val routeBefore = lastRouteClass ?: effectiveRouteClass()
+            val routeNow = effectiveRouteClass()
+            if (wasPlayingOrWanted && routeNow != routeBefore) {
+                Log.i("PlayerManager", "Маршрут вывода сменился: $routeBefore → $routeNow — пауза")
+                pausedByHeadsetDisconnect = true
+                pauseForInterruption("устройство вывода сменилось")
+            }
+            lastRouteClass = routeNow
+        }
+    }
+
+    /** Тип аудиоустройства — гарнитура (провод, USB или Bluetooth)? */
+    private fun isHeadsetDevice(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+            type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLE_HEADSET
+
+    /** Есть ли ещё подключённый аудиовыход-гарнитура: провод, USB или Bluetooth. */
+    private fun isHeadsetStillConnected(): Boolean {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        return try {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { info -> isHeadsetDevice(info.type) }
+        } catch (_: Exception) { false }
+    }
+
+    // ==================== выбор аудиовыхода ====================
+
+    /**
+     * Список доступных выводов звука: динамик, проводные/USB-наушники, Bluetooth.
+     * Обновляется при подключении/отключении устройств. Выбранное устройство
+     * опознаётся по ключу «тип + имя», поэтому выбор не слетает при обновлении
+     * списка и восстанавливается, когда та же гарнитура подключается снова
+     * (системный id при каждом переподключении новый).
+     */
+    fun refreshAudioOutputs() {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        val devices = try {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        } catch (_: Exception) { emptyArray<AudioDeviceInfo>() }
+        _audioOutputs.value = devices.mapNotNull { info ->
+            val name = info.productName?.toString()
+            audioOutputLabel(info.type, name)?.let { label ->
+                audioOutputKey(info.type, name)?.let { key ->
+                    AudioOutputOption(info.id, info.type, label, key)
+                }
+            }
+        }
+    }
+
+    private fun audioOutputLabel(type: Int, productName: String?): String? = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Динамик телефона"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> if (productName.isNullOrBlank()) "Проводные наушники" else "Проводные • $productName"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> if (productName.isNullOrBlank()) "USB-наушники" else "USB • $productName"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> if (productName.isNullOrBlank()) "Bluetooth" else "Bluetooth • $productName"
+        else -> null
+    }
+
+    /** Стабильный ключ устройства: одна и та же гарнитура даёт один и тот же ключ. */
+    private fun audioOutputKey(type: Int, productName: String?): String? = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "usb"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bt:" + (productName ?: "")
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> "ble:" + (productName ?: "")
+        else -> null
+    }
+
+    /**
+     * Выбрать конкретное устройство вывода по ключу. null — вернуть выбор системе
+     * (пользователь его из меню не видит: меню — только реальные устройства).
+     * Применяется к обоим плеерам на лету, переживает пересоздание плеера
+     * и переподключение той же гарнитуры.
+     */
+    fun selectAudioOutput(key: String?) {
+        _selectedAudioOutputKey.value = key
+        applyPreferredOutput(exoPlayer)
+        applyPreferredOutput(crossfadePlayer)
+        // Пользователь сам переключил вывод в шторке — музыку не глушим,
+        // просто фиксируем новый маршрут, чтобы детектор смены не сработал зря
+        lastRouteClass = effectiveRouteClass()
+        Log.i("PlayerManager", "Аудиовыход: ${key ?: "по выбору системы"}")
+    }
+
+    /** Прописать выбранный вывод конкретному плееру, если он жив (null = по выбору системы). */
+    private fun applyPreferredOutput(player: ExoPlayer?) {
+        if (player == null || isPlayerReleased(player)) return
+        try {
+            val selectedKey = _selectedAudioOutputKey.value
+            val device = if (selectedKey == null) null else {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                try {
+                    am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)?.firstOrNull { info ->
+                        audioOutputKey(info.type, info.productName?.toString()) == selectedKey
+                    }
+                } catch (_: Exception) { null }
+            }
+            player.setPreferredAudioDevice(device)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Класс фактического маршрута звука: «sel:<ключ>» — выбранное устройство доступно
+     * и активно; иначе системная маршрутизация по приоритету Bluetooth → проводные →
+     * динамик. Смена класса = смена устройства вывода.
+     */
+    private fun effectiveRouteClass(): String? {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
+        val devices = try {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        } catch (_: Exception) { return null }
+        val selected = _selectedAudioOutputKey.value
+        if (selected != null && devices.any { audioOutputKey(it.type, it.productName?.toString()) == selected }) {
+            return "sel:$selected"
+        }
+        return when {
+            devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET } -> "auto:bt"
+            devices.any {
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+            } -> "auto:wired"
+            else -> "auto:speaker"
+        }
+    }
+
+    /**
+     * Наушники подключили снова — продолжаем то, что остановили при снятии.
+     * Если пользователь уже сам слушает или переключался — флаг уже сброшен, и мы молчим.
+     */
+    private fun resumeFromHeadsetReconnect() {
+        try {
+            val player = exoPlayer
+            if (player == null || isPlayerReleased(player)) return
+            if (player.isPlaying) return
+            if (_playerState.value.currentSong == null) return
+            Log.i("PlayerManager", "Наушники снова подключены — продолжаем воспроизведение")
+            userWantsPlayback = true
+            if (player.playbackState == Player.STATE_IDLE) {
+                try { player.prepare() } catch (_: Exception) {}
+            }
+            player.play()
+            resetStallDetection()
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Пауза по внешней причине: снимает намерение слушать (иначе сторож зависания
+     * через полторы секунды примет тишину за неисправность и сам «оживит» трек)
+     * и глушит оба плеера — основной и кроссфейдный.
+     */
+    private fun pauseForInterruption(reason: String) {
+        Log.i("PlayerManager", "Остановка воспроизведения: $reason")
+        userWantsPlayback = false
+        resetStallDetection()
+        try {
+            exoPlayer?.let { player -> if (!isPlayerReleased(player)) player.pause() }
+        } catch (_: Exception) {}
+        try {
+            crossfadePlayer?.let { player -> if (!isPlayerReleased(player)) player.pause() }
+        } catch (_: Exception) {}
+    }
+
     init {
         // Прогреваем кэш учётных данных сразу: getStreamUrl() при cachedCredentials == null
         // возвращает ПУСТУЮ строку, и MediaItem с пустым Uri = «трек не грузится» без внятной
@@ -142,6 +453,23 @@ class PlayerManager @Inject constructor(
         scope.launch {
             runCatching { repository.refreshCredentialsCache() }
         }
+        // Наушники выдернули — музыка останавливается (с фильтром фантомных событий).
+        // Регистрация на всё время жизни приложения; targetSdk 34+ требует явного
+        // флага — системный broadcast регистрируем как NOT_EXPORTED.
+        ContextCompat.registerReceiver(
+            context,
+            noisyReceiver,
+            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        // Наушники подключили снова — продолжить воспроизведение, остановленное
+        // при снятии. Первый вызов колбэка (снимок текущих устройств) игнорируется.
+        refreshAudioOutputs()
+        lastRouteClass = effectiveRouteClass()
+        (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.registerAudioDeviceCallback(
+            headsetDeviceCallback,
+            android.os.Handler(android.os.Looper.getMainLooper())
+        )
         scope.launch {
             prefs.dislikedIdsFlow.collect { ids -> dislikedIds = ids }
         }
@@ -614,14 +942,18 @@ class PlayerManager @Inject constructor(
             exoPlayer = ExoPlayer.Builder(context)
                 // Без этого плеер наследует AudioAttributes.DEFAULT (USAGE_UNKNOWN): ОС считает
                 // его не-музыкой — нет медиа-маршрута, нет надлежащегоVolume-поведения, и при
-                // звонке такой поток могут не приглушить. handleAudioFocus = false сознательно:
-                // включённый фокус сам по себе ставит паузу, а паузы мы тут и так ловили.
+                // звонке такой поток могут не приглушить.
+                // Фокус ВКЛЮЧЁН: когда звуковую дорожку забирает другое приложение (звонок,
+                // будильник, видео, навигатор), ExoPlayer сам ставит паузу; при короткой
+                // потере (голосовое уведомление) — приглушает и после возвращает громкость.
+                // Кроссфейдный плеер создаётся без фокуса, чтобы на стыке треков два
+                // плеера не дрались за него и не глушили друг друга.
                 .setAudioAttributes(
                     androidx.media3.common.AudioAttributes.Builder()
                         .setUsage(androidx.media3.common.C.USAGE_MEDIA)
                         .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
                         .build(),
-                    /* handleAudioFocus = */ false
+                    /* handleAudioFocus = */ true
                 )
                 // ПРИЧИНА САМОПРОИЗВОЛЬНЫХ ОСТАНОВОК НА BLUETOOTH.
                 // Media3 1.7.1, ExoPlayerImpl.onAudioBecomingNoisy() (строка 3184) делает ровно
@@ -639,6 +971,8 @@ class PlayerManager @Inject constructor(
                 .setMediaSourceFactory(playbackEngine.createMediaSourceFactory())
                 .setLoadControl(playbackEngine.createLoadControl())
                 .build().apply {
+                    // Выбранный пользователем вывод звука переживает пересоздание плеера
+                    applyPreferredOutput(this)
                     addListener(object : Player.Listener {
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             _playerState.update { it.copy(isPlaying = isPlaying) }
@@ -647,6 +981,8 @@ class PlayerManager @Inject constructor(
                                 // сервис должен жить, чтобы получить foreground+уведомление.
                                 ensurePlaybackServiceStarted()
                                 userWantsPlayback = true
+                                pausedByHeadsetDisconnect = false
+                                lastRouteClass = effectiveRouteClass()
                                 stallRecoveryAttempts = 0
                                 resetStallDetection()
                                 startProgressUpdates()
@@ -672,13 +1008,26 @@ class PlayerManager @Inject constructor(
                                     "pos=${runCatching { exoPlayer?.currentPosition }.getOrNull()} " +
                                     "song=${_playerState.value.currentSong?.id}"
                             )
-                            // Явная пауза пользователя снимает намерение. Отказ по фокусу, «шуму»
-                            // или внешней команде намерения НЕ снимает: пользователь-то слушать
-                            // хочет, и сторож обязан это видеть.
+                            // Явная пауза пользователя снимает намерение.
                             if (!playWhenReady &&
                                 reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
                             ) {
                                 userWantsPlayback = false
+                            }
+                            // Потеря аудио-фокуса (заиграло чужое аудио) или команда «стало
+                            // шумно»: плеер остановился не сам по себе — намерение тоже
+                            // снимаем, иначе сторож зависания примет тишину за неисправность
+                            // и через полторы секунды «оживит» трек поверх чужого звука.
+                            // Если потеря была короткой (навигатор), фокус вернётся, плеер
+                            // продолжит сам — и onIsPlayingChanged снова поднимет намерение.
+                            if (!playWhenReady &&
+                                (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS ||
+                                    reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY)
+                            ) {
+                                userWantsPlayback = false
+                                if (isCrossfading) {
+                                    try { crossfadePlayer?.pause() } catch (_: Exception) {}
+                                }
                             }
                         }
 
@@ -984,6 +1333,7 @@ class PlayerManager @Inject constructor(
                     .build().apply {
                         // Копируем аудио атрибуты
                         setHandleAudioBecomingNoisy(false)
+                        applyPreferredOutput(this)
                     }
             }
             val cfPlayer = crossfadePlayer!!

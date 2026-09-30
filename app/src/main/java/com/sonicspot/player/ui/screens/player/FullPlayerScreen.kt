@@ -1,5 +1,6 @@
 package com.sonicspot.player.ui.screens.player
 
+import android.media.AudioDeviceInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -23,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.pointerInput
@@ -80,6 +82,9 @@ fun FullPlayerScreen(
     // мелкие изолированные композиции (слайдер, блоки текстов).
     val libraryInfo by viewModel.libraryInfo.collectAsState()
     val sleepTimerState by viewModel.sleepTimerState.collectAsState()
+    val audioOutputs by viewModel.audioOutputs.collectAsState()
+    val selectedOutputKey by viewModel.selectedAudioOutputKey.collectAsState()
+    val selectedOutput = audioOutputs.firstOrNull { it.key == selectedOutputKey }
 
     // Шторка «Добавить в плейлист» — общая для всех экранов с треками
     val addToPlaylistViewModel: AddToPlaylistViewModel = hiltViewModel()
@@ -88,6 +93,7 @@ fun FullPlayerScreen(
     var showFullscreenLyrics by remember { mutableStateOf(false) }
     var showRemoveLikeSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showOutputSheet by remember { mutableStateOf(false) }
 
     BackHandler(enabled = true) {
         when {
@@ -96,6 +102,7 @@ fun FullPlayerScreen(
             showTrackOptions -> showTrackOptions = false
             showQueueSheet -> showQueueSheet = false
             showSleepTimerSheet -> showSleepTimerSheet = false
+            showOutputSheet -> showOutputSheet = false
             else -> onClose()
         }
     }
@@ -370,6 +377,19 @@ fun FullPlayerScreen(
                                 Text("AutoDJ", color = if (playerState.autoDjEnabled) SpotifyColors.Green else SpotifyColors.White, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp))
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier.size(40.dp).clip(CircleShape)
+                                        .background(if (selectedOutput != null) SpotifyColors.Green else SpotifyColors.Gray)
+                                        .clickable { showOutputSheet = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        audioOutputIcon(selectedOutput?.type),
+                                        null,
+                                        tint = SpotifyColors.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                                 SleepTimerCompactIconButton(sleepState = sleepTimerState, onClick = { showSleepTimerSheet = true })
                                 Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(SpotifyColors.Gray).clickable { showQueueSheet = true }, contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.QueueMusic, null, tint = SpotifyColors.White, modifier = Modifier.size(22.dp))
@@ -485,6 +505,14 @@ fun FullPlayerScreen(
                 coverUrl = viewModel.getCoverUrl(song.coverArt, 176),
                 onDismiss = { showRemoveLikeSheet = false },
                 onRemove = { viewModel.toggleLike(song.id) }
+            )
+        }
+        if (showOutputSheet) {
+            AudioOutputBottomSheet(
+                outputs = audioOutputs,
+                selectedKey = selectedOutputKey,
+                onDismiss = { showOutputSheet = false },
+                onSelect = { key -> viewModel.selectAudioOutput(key) }
             )
         }
         if (showSleepTimerSheet) {
@@ -1335,4 +1363,104 @@ private fun formatTime(ms: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return String.format("%d:%02d", minutes, seconds)
+}
+
+
+// ==================== выбор устройства вывода ====================
+
+/** Иконка по типу аудиовыхода. */
+private fun audioOutputIcon(type: Int?): ImageVector = when (type) {
+    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_BLE_HEADSET -> Icons.Default.Bluetooth
+    AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_USB_HEADSET -> Icons.Default.Headphones
+    else -> Icons.Default.Speaker
+}
+
+/**
+ * Шторка «через что играть»: автоматический выбор системы (динамик или
+ * подключённые наушники) либо конкретное устройство. Если выбранное устройство
+ * отключится во время воспроизведения — музыка встанет на паузу.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioOutputBottomSheet(
+    outputs: List<com.sonicspot.player.player.AudioOutputOption>,
+    selectedKey: String?,
+    onDismiss: () -> Unit,
+    onSelect: (String?) -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = SpotifyColors.Gray,
+        contentColor = SpotifyColors.White,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp)) {
+            Text(
+                "Устройство вывода",
+                color = SpotifyColors.White,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            Text(
+                "Куда играть звук",
+                color = SpotifyColors.LightGray,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            HorizontalDivider(color = SpotifyColors.GrayLighter.copy(alpha = 0.3f))
+            if (selectedKey == null || outputs.none { it.key == selectedKey }) {
+                Text(
+                    if (selectedKey == null) "Не выбрано — вывод решает система"
+                    else "Выбранное устройство сейчас недоступно",
+                    color = SpotifyColors.MediumGray,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+            outputs.forEach { option ->
+                AudioOutputRow(
+                    icon = audioOutputIcon(option.type),
+                    label = option.label,
+                    selected = selectedKey == option.key,
+                    onClick = { onSelect(option.key); onDismiss() }
+                )
+            }
+            Text(
+                "Выбор запоминается: если устройство отключится — музыка встанет на паузу и продолжится через него же, когда вернётся",
+                color = SpotifyColors.MediumGray,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioOutputRow(
+    icon: ImageVector,
+    label: String,
+    sub: String? = null,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = if (selected) SpotifyColors.Green else SpotifyColors.White, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                label,
+                color = if (selected) SpotifyColors.Green else SpotifyColors.White,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+            )
+            if (sub != null) {
+                Text(sub, color = SpotifyColors.LightGray, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
+            }
+        }
+        if (selected) {
+            Icon(Icons.Default.Check, null, tint = SpotifyColors.Green, modifier = Modifier.size(20.dp))
+        }
+    }
 }

@@ -49,6 +49,9 @@ class PlayerViewModel @Inject constructor(
     val dislikedIds = dislikedRepository.dislikedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val likedIds = starredRepository.likedIdsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     val sleepTimerState = playerManager.sleepTimerState.stateIn(viewModelScope, SharingStarted.Eagerly, com.sonicspot.player.player.SleepTimerState.Off)
+    /** Доступные аудиовыходы (динамик, наушники, Bluetooth) — для меню выбора. */
+    val audioOutputs = playerManager.audioOutputs.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val selectedAudioOutputKey = playerManager.selectedAudioOutputKey.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _lyricsState = MutableStateFlow<LyricsUiState>(LyricsUiState.Loading)
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
@@ -148,6 +151,7 @@ class PlayerViewModel @Inject constructor(
 
     fun getCoverUrl(id: String?, size: Int = 500) = repository.getCoverArtUrl(id, size)
 
+    fun selectAudioOutput(key: String?) = playerManager.selectAudioOutput(key)
     fun togglePlayPause() = playerManager.togglePlayPause()
     fun playNext() = playerManager.playNext()
     fun playPrevious() = playerManager.playPrevious()
