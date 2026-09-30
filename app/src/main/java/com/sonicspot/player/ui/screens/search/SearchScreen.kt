@@ -100,7 +100,7 @@ fun SearchScreen(
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).statusBarsPadding()) {
                 // Заголовок меняется как в Spotify: когда фокус - показываем "Поиск" меньше или кнопку назад

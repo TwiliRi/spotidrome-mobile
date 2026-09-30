@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,6 +40,7 @@ import com.sonicspot.player.data.local.DownloadQueueItem
 import com.sonicspot.player.data.local.DownloadStore
 import com.sonicspot.player.data.repository.MusicRepository
 import com.sonicspot.player.ui.components.CoverArtImage
+import com.sonicspot.player.ui.theme.LocalStarTheme
 import com.sonicspot.player.ui.theme.SpotifyColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -86,11 +88,11 @@ fun ActiveDownloadsScreen(
                         Icon(Icons.Default.ArrowBack, null, tint = SpotifyColors.White, modifier = Modifier.size(20.dp))
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = SpotifyColors.Black),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black),
                 windowInsets = WindowInsets.statusBars
             )
         },
-        containerColor = SpotifyColors.Black
+        containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black
     ) { padding ->
         if (entries.isEmpty() && queued.isEmpty()) {
             Column(

@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicspot.player.ui.screens.player.PlayerViewModel
@@ -43,14 +44,14 @@ fun QueueScreen(onBack: () -> Unit, viewModel: PlayerViewModel = hiltViewModel()
                     }
                     if (queue.isNotEmpty()) TextButton(onClick = { viewModel.clearQueue() }) { Text("Очистить", color = SpotifyColors.White) }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = SpotifyColors.Black),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black),
                 windowInsets = WindowInsets.statusBars
             )
         },
-        containerColor = SpotifyColors.Black,
+        containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black,
         contentWindowInsets = WindowInsets.navigationBars
     ) { padding ->
-        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).background(SpotifyColors.Black), contentPadding = PaddingValues(bottom = 100.dp)) {
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).appBackground(), contentPadding = PaddingValues(bottom = 100.dp)) {
             // Sync info banner
             item {
                 Row(

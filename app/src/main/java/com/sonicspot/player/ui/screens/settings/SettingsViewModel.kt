@@ -29,7 +29,9 @@ data class SettingsUiState(
     /** Способ переключения библиотек на «Главной» и в «Медиатеке». */
     val librarySwitcherMode: String = PreferencesManager.LIBRARY_SWITCHER_BUTTONS,
     /** Анимация кнопки «случайный трек»: чёрная дыра или без неё. */
-    val randomTrackAnim: String = PreferencesManager.RANDOM_ANIM_BLACKHOLE
+    val randomTrackAnim: String = PreferencesManager.RANDOM_ANIM_BLACKHOLE,
+    /** Звёздная тема: космический фон на всех вкладках. */
+    val starTheme: Boolean = false
 )
 
 @HiltViewModel
@@ -52,6 +54,7 @@ class SettingsViewModel @Inject constructor(
     private val notificationButtons = prefs.notificationButtonsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.NOTIF_BUTTONS_ALL)
     private val librarySwitcherMode = prefs.librarySwitcherModeFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.LIBRARY_SWITCHER_BUTTONS)
     private val randomTrackAnim = prefs.randomTrackAnimFlow.stateIn(viewModelScope, SharingStarted.Eagerly, PreferencesManager.RANDOM_ANIM_BLACKHOLE)
+    private val starTheme = prefs.starThemeFlow.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     init {
         viewModelScope.launch {
@@ -88,6 +91,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             randomTrackAnim.collect { v -> _uiState.value = _uiState.value.copy(randomTrackAnim = v) }
         }
+        viewModelScope.launch {
+            starTheme.collect { v -> _uiState.value = _uiState.value.copy(starTheme = v) }
+        }
     }
 
     fun setSkipDisliked(enabled: Boolean) { viewModelScope.launch { prefs.setSkipDisliked(enabled) } }
@@ -98,6 +104,7 @@ class SettingsViewModel @Inject constructor(
     fun setNotificationButtons(buttons: Set<String>) { viewModelScope.launch { prefs.setNotificationButtons(buttons) } }
     fun setLibrarySwitcherMode(mode: String) { viewModelScope.launch { prefs.setLibrarySwitcherMode(mode) } }
     fun setRandomTrackAnim(mode: String) { viewModelScope.launch { prefs.setRandomTrackAnim(mode) } }
+    fun setStarTheme(enabled: Boolean) { viewModelScope.launch { prefs.setStarTheme(enabled) } }
     fun cleanupDuplicates() { viewModelScope.launch { dislikedRepository.cleanupDuplicateExcludedPlaylists() } }
     fun clearDisliked() { viewModelScope.launch { prefs.clearDisliked() } }
     fun clearPinned() { viewModelScope.launch { pinnedRepository.clearAllPins() } }

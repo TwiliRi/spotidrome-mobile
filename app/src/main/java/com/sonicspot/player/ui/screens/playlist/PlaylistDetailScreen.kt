@@ -79,7 +79,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
             }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         if (state.isLoading) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = SpotifyColors.White)
             return
@@ -104,7 +104,7 @@ fun PlaylistDetailScreen(playlistId: String, onBack: () -> Unit, viewModel: Play
             contentPadding = PaddingValues(bottom = 100.dp)
         ) {
             item(key = "header", contentType = "header") {
-                Box(modifier = Modifier.fillMaxWidth().background(gradient)) {
+                Box(modifier = Modifier.fillMaxWidth().appBackground(gradient)) {
                     Column {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).statusBarsPadding(),

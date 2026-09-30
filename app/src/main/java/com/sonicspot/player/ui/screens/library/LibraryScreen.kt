@@ -67,7 +67,7 @@ fun LibraryScreen(
     SpotifyPullToRefreshBox(
         isRefreshing = state.isRefreshing,
         onRefresh = { viewModel.refresh() },
-        modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)
+        modifier = Modifier.fillMaxSize().appBackground()
     ) {
         if (searchState.isActive) {
             LibrarySearchPanel(

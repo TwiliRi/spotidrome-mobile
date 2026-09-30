@@ -106,7 +106,7 @@ fun ArtistDetailScreen(
 
     LaunchedEffect(artistId) { viewModel.loadArtist(artistId) }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         if (state.isLoading) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = SpotifyColors.White)
             return
@@ -158,7 +158,9 @@ fun ArtistDetailScreen(
                                     Color.Transparent,
                                     Color.Black.copy(alpha = 0.2f),
                                     Color.Black.copy(alpha = 0.6f),
-                                    SpotifyColors.Black
+                                    // в звёздной теме низ баннера не уходит в глухой чёрный —
+                                    // фото мягко растворяется в ночном небе
+                                    if (LocalStarTheme.current) Color.Black.copy(alpha = 0.55f) else SpotifyColors.Black
                                 ),
                                 startY = 150f,
                                 endY = 1000f

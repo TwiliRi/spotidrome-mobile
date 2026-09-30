@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.sonicspot.player.data.local.PreferencesManager
@@ -30,6 +31,8 @@ import com.sonicspot.player.ui.navigation.DeepLinks
 import com.sonicspot.player.ui.navigation.Screen
 import com.sonicspot.player.ui.screens.player.FullPlayerScreen
 import com.sonicspot.player.ui.theme.Background
+import com.sonicspot.player.ui.theme.LocalStarTheme
+import com.sonicspot.player.ui.theme.StarfieldBackground
 import com.sonicspot.player.ui.theme.SonicSpotTheme
 import com.sonicspot.player.ui.theme.SpotifyColors
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -85,6 +88,9 @@ class MainActivity : ComponentActivity() {
                 // оверлей с чёрной дырой рисуется поверх всего приложения
                 val randomTrackViewModel: RandomTrackViewModel = hiltViewModel()
                 val randomRoll by randomTrackViewModel.state.collectAsState()
+
+                // Звёздная тема: живёт в настройках, применяется ко всему приложению
+                val starTheme by prefs.starThemeFlow.collectAsState(initial = false)
 
                 val currentSong by playerManager.currentSongFlow.collectAsState()
 
@@ -159,7 +165,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Scaffold(
+                // Звёздная тема: общий анимированный фон под всеми вкладками.
+                // Экраны при теме прозрачны (appBackground), поэтому небо видно везде.
+                CompositionLocalProvider(LocalStarTheme provides starTheme) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (starTheme) StarfieldBackground(modifier = Modifier.fillMaxSize())
+                    Scaffold(
                     snackbarHost = {
                         SnackbarHost(hostState = snackbarHostState) { data ->
                             Snackbar(
@@ -171,7 +182,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     bottomBar = {
-                        Column(modifier = Modifier.background(SpotifyColors.Black)) {
+                        Column(modifier = Modifier.background(if (starTheme) Color.Black.copy(alpha = 0.45f) else SpotifyColors.Black)) {
                             AnimatedVisibility(
                                 visible = currentSong != null && !showFullPlayer,
                                 enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) + fadeIn(tween(200)),
@@ -208,7 +219,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    containerColor = Background,
+                    containerColor = if (starTheme) Color.Transparent else Background,
                     contentWindowInsets = WindowInsets(0)
                 ) { padding ->
                     Box(modifier = Modifier.padding(bottom = padding.calculateBottomPadding())) {
@@ -253,6 +264,8 @@ class MainActivity : ComponentActivity() {
                     state = randomRoll,
                     onSkip = { randomTrackViewModel.skip() }
                 )
+                }
+                }
             }
         }
     }

@@ -44,6 +44,7 @@ class PreferencesManager @Inject constructor(
     private val notificationButtonsKey = stringSetPreferencesKey("notification_buttons")
     private val librarySwitcherModeKey = stringPreferencesKey("library_switcher_mode")
     private val randomTrackAnimKey = stringPreferencesKey("random_track_anim")
+    private val starThemeKey = booleanPreferencesKey("star_theme")
 
     val isLoggedIn: Flow<Boolean> = context.dataStore.data.map { prefs ->
         !prefs[serverUrlKey].isNullOrEmpty() && !prefs[usernameKey].isNullOrEmpty() && !prefs[tokenKey].isNullOrEmpty()
@@ -87,6 +88,7 @@ class PreferencesManager @Inject constructor(
     val randomTrackAnimFlow: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[randomTrackAnimKey] ?: RANDOM_ANIM_BLACKHOLE
     }
+    val starThemeFlow: Flow<Boolean> = context.dataStore.data.map { prefs -> prefs[starThemeKey] ?: false }
 
     suspend fun saveLogin(serverUrl: String, username: String, password: String) {
         val salt = AuthUtil.generateSalt()
@@ -174,6 +176,11 @@ class PreferencesManager @Inject constructor(
     suspend fun setLibrarySwitcherMode(mode: String) {
         val normalized = if (mode == LIBRARY_SWITCHER_MENU) LIBRARY_SWITCHER_MENU else LIBRARY_SWITCHER_BUTTONS
         context.dataStore.edit { prefs -> prefs[librarySwitcherModeKey] = normalized }
+    }
+
+    /** Включает/выключает звёздную тему оформления (фон всех вкладок). */
+    suspend fun setStarTheme(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[starThemeKey] = enabled }
     }
 
     /** Сохраняет анимацию «случайного трека». Принимает только известные значения, иначе — чёрная дыра. */

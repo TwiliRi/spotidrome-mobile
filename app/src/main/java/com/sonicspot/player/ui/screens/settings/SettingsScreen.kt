@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -48,15 +49,15 @@ fun SettingsScreen(
                         Icon(Icons.Default.ArrowBack, null, tint = SpotifyColors.White, modifier = Modifier.size(20.dp))
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = SpotifyColors.Black),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black),
                 windowInsets = WindowInsets.statusBars
             )
         },
-        containerColor = SpotifyColors.Black,
+        containerColor = if (LocalStarTheme.current) Color.Transparent else SpotifyColors.Black,
         contentWindowInsets = WindowInsets.navigationBars
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).background(SpotifyColors.Black),
+            modifier = Modifier.fillMaxSize().padding(padding).appBackground(),
             contentPadding = PaddingValues(bottom = 100.dp)
         ) {
             // Аккаунт
@@ -66,6 +67,20 @@ fun SettingsScreen(
                     SettingsRow(icon = Icons.Default.Person, title = "Пользователь", subtitle = state.username.ifEmpty { "Неизвестно" })
                     HorizontalDivider(color = SpotifyColors.Gray.copy(alpha = 0.3f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsRow(icon = Icons.Default.Cloud, title = "Сервер", subtitle = state.serverUrl.ifEmpty { "Не указан" })
+                }
+            }
+
+            // Внешний вид
+            item {
+                SettingsSectionHeader("Внешний вид")
+                SettingsCard {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.AutoAwesome,
+                        title = "Звёздная тема",
+                        subtitle = "Мерцающие звёзды и редкие метеоры на фоне всех вкладок",
+                        checked = state.starTheme,
+                        onCheckedChange = { viewModel.setStarTheme(it) }
+                    )
                 }
             }
 

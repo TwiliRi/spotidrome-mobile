@@ -654,7 +654,7 @@ fun MiniPlayerModern(
 // ==================== BOTTOM NAV ====================
 @Composable
 fun SpotifyBottomNavModern(currentRoute: String, onNavigate: (String) -> Unit, modifier: Modifier = Modifier) {
-    NavigationBar(modifier = modifier, containerColor = Color.Black, contentColor = SpotifyColors.White, tonalElevation = 0.dp) {
+    NavigationBar(modifier = modifier, containerColor = if (LocalStarTheme.current) Color.Black.copy(alpha = 0.55f) else Color.Black, contentColor = SpotifyColors.White, tonalElevation = 0.dp) {
         val items = listOf(Triple("home", "Главная", Icons.Filled.Home), Triple("search", "Поиск", Icons.Filled.Search), Triple("library", "Медиатека", Icons.Filled.LibraryMusic))
         items.forEach { (route, label, icon) ->
             val selected = currentRoute == route

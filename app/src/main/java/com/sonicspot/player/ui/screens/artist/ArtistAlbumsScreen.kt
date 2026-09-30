@@ -49,6 +49,7 @@ import com.sonicspot.player.ui.components.CoverArtImage
 import com.sonicspot.player.ui.components.ShimmerPlaceholder
 import com.sonicspot.player.ui.components.SpotifyPullToRefreshBox
 import com.sonicspot.player.ui.theme.SpotifyColors
+import com.sonicspot.player.ui.theme.appBackground
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -161,11 +162,11 @@ fun ArtistAlbumsScreen(
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         SpotifyPullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
-            modifier = Modifier.fillMaxSize().background(gradient)
+            modifier = Modifier.fillMaxSize().appBackground(gradient)
         ) {
             when {
                 state.isLoading -> {

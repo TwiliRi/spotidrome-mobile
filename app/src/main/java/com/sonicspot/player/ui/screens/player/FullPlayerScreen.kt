@@ -102,7 +102,7 @@ fun FullPlayerScreen(
 
     val song = currentSong
     if (song == null) {
-        Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxSize().appBackground(), contentAlignment = Alignment.Center) {
             Text("Ничего не играет", color = SpotifyColors.White)
         }
         return
@@ -152,10 +152,20 @@ fun FullPlayerScreen(
         )
     }
 
+    // В звёздной теме вместо глухого градиента — тёмный полупрозрачный скрим:
+    // сквозь него мягко проглядывают мерцающие звёзды общего фона
+    val starTheme = LocalStarTheme.current
+    val scrim = remember(starTheme) {
+        Brush.verticalGradient(
+            colors = listOf(Color(0xD9101322), Color(0xE60A0C16), Color(0xF205060C), Color(0xF205060C)),
+            startY = 0f, endY = 1200f
+        )
+    }
+
     val mainListState = rememberLazyListState()
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
-        Box(modifier = Modifier.fillMaxSize().background(gradient))
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
+        Box(modifier = Modifier.fillMaxSize().background(if (starTheme) scrim else gradient))
 
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -755,7 +765,7 @@ private fun FullscreenLyricsScreen(
             .build()
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         AsyncImage(
             model = coverRequestSmall,
             contentDescription = null,

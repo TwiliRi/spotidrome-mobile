@@ -35,7 +35,7 @@ fun LoginScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(SpotifyColors.Black)
+            .appBackground()
     ) {
         Column(
             modifier = Modifier

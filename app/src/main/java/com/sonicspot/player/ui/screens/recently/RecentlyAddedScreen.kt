@@ -89,11 +89,11 @@ fun RecentlyAddedScreen(
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         SpotifyPullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
-            modifier = Modifier.fillMaxSize().background(gradient)
+            modifier = Modifier.fillMaxSize().appBackground(gradient)
         ) {
             when {
                 state.isLoading -> {

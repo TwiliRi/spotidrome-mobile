@@ -67,7 +67,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
             }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(SpotifyColors.Black)) {
+    Box(modifier = Modifier.fillMaxSize().appBackground()) {
         if (state.isLoading) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = SpotifyColors.White)
             return
@@ -87,7 +87,7 @@ fun AlbumDetailScreen(albumId: String, onBack: () -> Unit, viewModel: AlbumDetai
             contentPadding = PaddingValues(bottom = 100.dp)
         ) {
             item {
-                Box(modifier = Modifier.fillMaxWidth().background(gradient)) {
+                Box(modifier = Modifier.fillMaxWidth().appBackground(gradient)) {
                     Column {
                         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp).statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = onBack, modifier = Modifier.size(36.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.5f))) {

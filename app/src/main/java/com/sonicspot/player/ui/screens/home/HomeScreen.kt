@@ -109,7 +109,7 @@ fun HomeScreen(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     Box(
-        modifier = Modifier.fillMaxSize().background(backgroundBrush)
+        modifier = Modifier.fillMaxSize().appBackground(backgroundBrush)
     ) {
         SpotifyPullToRefreshBox(
             isRefreshing = state.isRefreshing,
